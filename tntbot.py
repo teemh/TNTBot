@@ -18,9 +18,9 @@ tz = ZoneInfo("America/New_York")
 # BOT CONFIG
 load_dotenv()
 TOKEN       = os.getenv('TOKEN')
-GUILD_ID    = 1483671851866783805 # Server ID
-EAST_ID     = 1483849304136351765
-CENTRAL_ID  = 1483849348931518475
+GUILD_ID    = int(os.getenv('GUILD_ID'))
+EAST_ID     = int(os.getenv('EAST_ID'))
+CENTRAL_ID  = int(os.getenv('CENTRAL_ID'))
 CHECK_TIMES = [
     datetime.time(hour=19, minute=28, tzinfo=tz), # 24h Eastern
     datetime.time(hour=19, minute=29, tzinfo=tz), # 24h Eastern
