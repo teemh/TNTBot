@@ -26,14 +26,6 @@ CHECK_TIMES = [
     datetime.time(hour=19, minute=29, tzinfo=tz), # 24h Eastern
 ]
 
-# BOT PERMISSIONS
-intent = discord.Intents.default()
-intent.members = True      # Required to see member lists
-intent.voice_states = True # Required to see who is in voice channels
-
-# MAIN
-bot = commands.Bot(command_prefix="!", intents=intent)
-
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -41,7 +33,8 @@ class AttendanceCog(commands.Cog):
         self.counter = len(CHECK_TIMES)
 
     def cog_unload(self):
-        self.check_attendance.cancel() # Cleanly stops the background thread
+        # Cleanly stop the background thread
+        self.check_attendance.cancel()
 
     @tasks.loop(time = CHECK_TIMES)
     async def check_attendance(self):
@@ -103,31 +96,54 @@ class AttendanceCog(commands.Cog):
         except discord.ClientException:
             print("ERROR Could not disconnect.")
 
+    @commands.command()
+    @commands.guild_only() # Don't allow this command in DMs, because the DM space has no ctx.
+    async def list_users(self, ctx, *, channel_name: str):
+        channel_id = 0
+        channel = discord.utils.get(ctx.guild.channels, name=channel_name)
+        if channel:
+            members = channel.members
+            out = ""
+            for member in members:
+                out = out + member.display_name + "\n"
+            await ctx.send(f"Members in Channel {channel.name} ({channel.id}) \n{out}")
+        else:
+            await ctx.send("ERROR Channel Not Found")
 
 class TNTBot(commands.Bot):
     def __init__(self):
+        guild = None
         intents = discord.Intents.default()
-        intents.members = True      # Required to see member lists
-        intents.voice_states = True # Required to see who is in voice channels
+        intents.members = True           # Required to see member lists
+        intents.voice_states = True      # Required to see who is in voice channels
+        intents.message_content = True   # Required to read command messages
+        intents.messages = True          # Required to send messages
+        intents.guilds = True            # Required to access guild/channel info
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        print("TNTBot loaded.")
+        print("AttendanceCog loaded.")
+        await self.add_cog(AttendanceCog(bot))
 
-    @bot.event
     async def on_attendance_taken(self):
         print ("Attendance taken.")
-        await bot.close()
+        #await self.close()
 
-    @bot.event
     async def on_ready(self):
         print(f"Logged in as {self.user}")
-        guild = self.get_guild(GUILD_ID)
-        if guild is None:
+        print("Registered commands:")
+        for command in self.commands:
+            print(f"- {command.name}")
+        self.guild = self.get_guild(GUILD_ID)
+        if self.guild is None:
             print(f"Could not find guild with ID {GUILD_ID}. "
                   "ERROR: Make sure the bot has been invited to that server.")
             return
-        await self.add_cog(AttendanceCog(bot))
+
+    async def on_message(self, message):
+        print(f"{message.content}")
+        await self.process_commands(message)
+
 
 bot = TNTBot()
 bot.run(TOKEN)
