@@ -144,6 +144,19 @@ class TNTBot(commands.Bot):
         print(f"{message.content}")
         await self.process_commands(message)
 
+    async def on_command_error(self, ctx, error):
+        if isinstance(error, commands.CommandNotFound):
+            await ctx.send(f"Unknown command. Use `{ctx.prefix}help` to see available commands.")
+            return
+        raise error
+
+class HelpCommand(commands.MinimalHelpCommand):
+    async def send_pages(self):
+        destination = self.get_destination()
+        for page in self.paginator.pages:
+            emby = discord.Embed(description=page)
+            await destination.send(embed=emby)
 
 bot = TNTBot()
+bot.help_command = HelpCommand()
 bot.run(TOKEN)
