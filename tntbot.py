@@ -25,6 +25,7 @@ CHECK_TIMES = [
     datetime.time(hour=19, minute=28, tzinfo=tz), # 24h Eastern
     datetime.time(hour=19, minute=29, tzinfo=tz), # 24h Eastern
 ]
+ALLOWED_USERS = list(map(int, os.getenv('ALLOWED_USERS').split(',')))
 
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
@@ -141,8 +142,9 @@ class TNTBot(commands.Bot):
             return
 
     async def on_message(self, message):
-        print(f"{message.content}")
-        await self.process_commands(message)
+        if (message.author.id in ALLOWED_USERS):
+            print(f"{message.content}")
+            await self.process_commands(message)
 
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.CommandNotFound):
