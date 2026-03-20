@@ -1,5 +1,5 @@
 import os
-import datetime
+from datetime import datetime, timedelta
 import discord
 from zoneinfo import ZoneInfo
 import asyncio
@@ -21,33 +21,51 @@ TOKEN       = os.getenv('TOKEN')
 GUILD_ID    = int(os.getenv('GUILD_ID'))
 EAST_ID     = int(os.getenv('EAST_ID'))
 CENTRAL_ID  = int(os.getenv('CENTRAL_ID'))
-CHECK_TIMES = [
-    datetime.time(hour=19, minute=28, tzinfo=tz), # 24h Eastern
-    datetime.time(hour=19, minute=29, tzinfo=tz), # 24h Eastern
-]
+
 ALLOWED_USERS = list(map(int, os.getenv('ALLOWED_USERS').split(',')))
+
+TNT_START = datetime.now(tz).replace(hour=19, minute=0)
+TNT_END   = datetime.now(tz).replace(hour=23, minute=0)
+TNT_CHECK_COUNT = 10 
+TNT_CHECK_MINUTES = int(((TNT_END - TNT_START) / TNT_CHECK_COUNT).total_seconds() / 60)
 
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.check_attendance.start()
-        self.counter = len(CHECK_TIMES)
 
     def cog_unload(self):
-        # Cleanly stop the background thread
+        # Cancel taskes if cog is unloaded
         self.check_attendance.cancel()
 
-    @tasks.loop(time = CHECK_TIMES)
+    # TODO count = 1 for testing, replace later
+    @tasks.loop(count = 1)
     async def check_attendance(self):
+        # TODO keep a record of the users
+
         east = self.bot.get_channel(EAST_ID)
         central = self.bot.get_channel(CENTRAL_ID)
-        await self.check_channel(east) 
-        await self.check_channel(central)
 
-        self.counter = self.counter - 1;
-        if(self.counter == 0):
-            self.check_attendance.stop() 
-            self.bot.dispatch("attendance_taken")
+        if east:
+            print("Members in 'east':")
+            members = east.members
+            for member in members:
+                print(member.name)
+        else:
+            print("ERROR: Could not find channel 'east'")
+
+        # TODO refactor
+        if central:
+            print("Members in 'central':")
+            members = central.members
+            for member in members:
+                print(member.name)
+        else:
+            print("ERROR: Could not find channel 'east'")
+
+    @check_attendance.after_loop
+    async def after_check_attendance(self):
+        self.bot.dispatch("attendance_taken")
 
     def guild_name(self):
         guild = self.bot.get_guild(GUILD_ID)
@@ -110,6 +128,25 @@ class AttendanceCog(commands.Cog):
             await ctx.send(f"Members in Channel {channel.name} ({channel.id}) \n{out}")
         else:
             await ctx.send("ERROR Channel Not Found")
+
+    @commands.command()
+    @commands.guild_only() # Don't allow this command in DMs, because the DM space has no ctx.
+    async def announce_tnt(self, ctx):
+        start = int(TNT_START.timestamp()) 
+        end = int(TNT_END.timestamp()) 
+        message = f"""
+Trenched n' Tuesday <t:{start}:R>. Let’s get to seeding. 
+
+Official Run Time: <t:{start}:t> to <t:{end}:t> To Earn Operational Credit: Be in either Tactical Realism East or Central voice channels AND play on our servers for at least 1 hour total 
+
+7th Cav Squad Limits: 
+4 in infantry 
+2 in tanks and artillery
+1 in recon
+
+Please do not :lock: squads (after all, this is a community/recruiting event)
+"""
+        await ctx.send(TNTMessage())
 
 class TNTBot(commands.Bot):
     def __init__(self):
