@@ -29,6 +29,9 @@ TNT_END   = datetime.now(tz).replace(hour=23, minute=0)
 TNT_CHECK_COUNT = 10 
 TNT_CHECK_MINUTES = int(((TNT_END - TNT_START) / TNT_CHECK_COUNT).total_seconds() / 60)
 
+TNT_TOTAL_TIME = []
+TNT_JOIN_TIME = []
+
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -75,45 +78,6 @@ class AttendanceCog(commands.Cog):
     async def before_check_attendance(self):
         print("Waiting until time")
         await self.bot.wait_until_ready()
-
-    def guild_name(self):
-        guild = self.bot.get_guild(GUILD_ID)
-        return guild.name
-
-    async def check_channel(self, channel):
-        # Does channel exist?
-        if channel is None:
-            print(f"ERROR: Could not find channel with ID {TARGET_CHANNEL_ID}.")
-            return
-        if not isinstance(channel, discord.VoiceChannel):
-            print(f"ERROR: Channel '{channel.name}' is not a voice channel.")
-            return
-
-        # Try to join channel
-        print(f"Joining voice channel: '{channel.name}' in '{self.guild_name()}'")
-        try:
-            await channel.connect()
-            print("Successfully joined the voice channel.")
-        except discord.ClientException:
-            print("Already connected to a voice channel in this guild.")
-
-        # Get a list of the members in the channel
-        # TODO create dictionary to count occurrences
-        members = channel.members
-        print(f"Members in '{channel.name}' ({len(members)} total):")
-        if members:
-            for member in members:
-                print(f"{member.display_name}")
-        else:
-            print(f"{channel.name} is empty.")
-
-        # Done. Leave the channel.
-        print(f"Leaving voice channel: '{channel.name}' in '{self.guild_name()}'")
-        try:
-            await channel.guild.voice_client.disconnect()
-            print("Successfully disconnected from voice channel.")
-        except discord.ClientException:
-            print("ERROR Could not disconnect.")
 
     @commands.command()
     @commands.guild_only() # Don't allow this command in DMs, because the DM space has no ctx.
