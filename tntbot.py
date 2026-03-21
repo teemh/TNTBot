@@ -65,15 +65,13 @@ class AttendanceCog(commands.Cog):
         # Print out attendance sheet
         if not self.total_time:
             await ctx.send("Nobody came :(")
-            return
-
-        lines = []
-        for member_id, seconds in self.total_time.items():
-            name = self.member_names.get(member_id, str(member_id))
-            hours = seconds / 3600
-            lines.append(f"{name}: {hours:.2f}h")
-
-        await ctx.send("```\n" + "\n".join(lines) + "\n```")
+        else:
+            lines = []
+            for member_id, seconds in self.total_time.items():
+                name = self.member_names.get(member_id, str(member_id))
+                hours = seconds / 3600
+                lines.append(f"{name}: {hours:.2f}h")
+            await ctx.send("```\n" + "\n".join(lines) + "\n```")
 
         # Reset attendance
         self.taking_attendance = False
