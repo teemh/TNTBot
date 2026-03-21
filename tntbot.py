@@ -82,7 +82,7 @@ class AttendanceCog(commands.Cog):
         self.member_names = {}
         await ctx.send("Stopped watching TNT channels.")
 
-    def flush_member(self, member_id, now):
+    def __flush_member(self, member_id, now):
         if member_id in self.join_time:
             session_seconds = (now - self.join_time.pop(member_id)).total_seconds()
             self.total_time[member_id] = self.total_time.get(member_id, 0) + session_seconds
@@ -101,7 +101,7 @@ class AttendanceCog(commands.Cog):
                 self.member_names[member.id] = member.display_name
 
             elif leave and not enter:
-                self.flush_member(member.id, now)
+                self.__flush_member(member.id, now)
 
     # TODO (minutes=TNT_CHECK_MINUTES, count=TNT_CHECK_COUNT)
     @tasks.loop(seconds = 4)
@@ -118,7 +118,7 @@ class AttendanceCog(commands.Cog):
                     self.join_time[member.id] = now
                     self.member_names[member.id] = member.display_name
                 else:
-                    self.flush_member(member.id, now)
+                    self.__flush_member(member.id, now)
                     self.join_time[member.id] = now
 
                 total = self.total_time.get(member.id, 0) 
@@ -209,6 +209,9 @@ class TNTBot(commands.Bot):
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.CommandNotFound):
             await ctx.send(f"Unknown command. Use `{ctx.prefix}help` to see available commands.")
+            return
+        elif isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send(f"Error: Missing Required Arugment(s)")
             return
         raise error
 
