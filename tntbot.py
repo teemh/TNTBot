@@ -42,14 +42,7 @@ class AttendanceCog(commands.Cog):
         # Cancel tasks if cog is unloaded
         self.check_attendance.cancel()
 
-    @commands.command()
-    @commands.guild_only() # Don't allow this command in DMs, because the DM space has no ctx.
-    async def attendance_print(self, ctx):
-        self.check_attendance.start()
-        self.taking_attendance = True
-        await ctx.send("Watching TNT channels...")
-
-    @commands.command()
+@commands.command()
     @commands.guild_only() # Don't allow this command in DMs, because the DM space has no ctx.
     async def attendance_start(self, ctx):
         # TODO check if it's thursday
