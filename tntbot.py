@@ -25,10 +25,9 @@ CENTRAL_ID  = int(os.getenv('CENTRAL_ID'))
 ALLOWED_USERS = list(map(int, os.getenv('ALLOWED_USERS').split(',')))
 
 TNT_CHANNELS = [EAST_ID, CENTRAL_ID]
-TNT_START = time(hour=19, minute=0, tzinfo=TZ)
-TNT_END   = time(hour=23, minute=0, tzinfo=TZ)
-TNT_CHECK_COUNT = 10 
-TNT_TIMES = [TNT_START, TNT_END]
+TNT_START = datetime.now(TZ).replace(hour=17, minute=0, tzinfo=TZ)
+TNT_END   = datetime.now(TZ).replace(hour=17, minute=5, tzinfo=TZ)
+TNT_TIMES = [TNT_START.time(), TNT_END.time()]
 
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
@@ -42,9 +41,11 @@ class AttendanceCog(commands.Cog):
         # Cancel tasks if cog is unloaded
         self.check_attendance.cancel()
 
-@commands.command()
+    @commands.command()
     @commands.guild_only() # Don't allow this command in DMs, because the DM space has no ctx.
     async def attendance_start(self, ctx):
+        # TODO if the attendance is started after start time take attendance anyway
+        # TODO if the attendance is stopped before end time take one last attendance
         # TODO check if it's thursday
         self.check_attendance.start()
         self.taking_attendance = True
@@ -62,8 +63,9 @@ class AttendanceCog(commands.Cog):
             lines = []
             for member_id, seconds in self.total_time.items():
                 name = self.member_names.get(member_id, str(member_id))
+                minutes = seconds / 60
                 hours = seconds / 3600
-                lines.append(f"{name}: {hours:.2f}h")
+                lines.append(f"{name}: {hours:.2f}h {minutes:.2f}m {seconds:2f}s")
             await ctx.send("```\n" + "\n".join(lines) + "\n```")
 
         # Reset attendance
@@ -83,6 +85,7 @@ class AttendanceCog(commands.Cog):
         # This fires on every voice state event
         # So, we don't want it doing any work if the task isn't running.
         if self.taking_attendance:
+            print("test")
             now = datetime.now(TZ)
             leave = before.channel and before.channel.id in TNT_CHANNELS
             enter = after.channel and after.channel.id in TNT_CHANNELS
@@ -157,7 +160,7 @@ Official Run Time: <t:{start}:t> to <t:{end}:t> To Earn Operational Credit: Be i
 
 Please do not :lock: squads (after all, this is a community/recruiting event)
 """
-        await ctx.send(TNTMessage())
+        await ctx.send(message)
 
 class TNTBot(commands.Bot):
     def __init__(self):
@@ -173,10 +176,6 @@ class TNTBot(commands.Bot):
     async def setup_hook(self):
         print("AttendanceCog loaded.")
         await self.add_cog(AttendanceCog(bot))
-
-    async def on_attendance_taken(self):
-        print ("Attendance taken.")
-        #await self.close()
 
     async def on_ready(self):
         print(f"Logged in as {self.user}")
