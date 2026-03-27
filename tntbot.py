@@ -36,210 +36,185 @@ GUILD_ID    = int(os.getenv('GUILD_ID'))
 
 ALLOWED_USERS = list(map(int, os.getenv('ALLOWED_USERS').split(',')))
 
-TNT_START = "19:00"
-TNT_END = "21:00"
-TNT_CHANNELS = ["east", "central"]
+class WatchJob():
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.name = ""
+        self.task = None
+        self.start = None
+        self.end = None
+        self.interval = 0
+        self.channels = {}
+        self.attendance = {}
+        self.msg = ""
+        self.waiting = False
+
+    def pt(self, dt):
+        return dt.strftime("%H:%M")
+
+    def status(self):
+        status = ""
+        out = f" | {self.pt(self.start)} to {self.pt(self.end)} | {self.channels.keys()}"
+        if self.task.is_running and self.waiting:
+            status = "waiting"
+        elif self.task.is_running:
+            status = "watching"
+        else:
+            status = "failing" + out
+
+        return f"'{self.name}' | {status} | {self.pt(self.start)} to {self.pt(self.end)} | {list(self.channels.keys())}"
+
+    def print(self):
+        out = f"Attendance for channels: {list(self.channels.keys())}\n\n"
+        for name, user in self.attendance.items():
+            out += f"{name};{user[1]}\n"
+        return out
+
+    def delta(self):
+        return timedelta(seconds=10)
 
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.__attendance_reset()
+        self.jobs = {}
 
     def cog_unload(self):
         # Cancel tasks if cog is unloaded
-        self.check_attendance.cancel()
+        for job in self.jobs.values():
+            job.task.cancel()
+
+    async def watch_loop(self, ctx, job):
+        # Task actually started now so no longer waiting
+        job.waiting = False
+
+        now = datetime.now(TZ)
+
+        if (now >= job.end):
+            job.task.cancel()
+            await ctx.send("```" + job.print() + "```")
+            del self.jobs[name]
+            await ctx.send("Finished watching channel(s).")
+            return
+
+        for name, cid in job.channels.items():
+            channel = self.bot.get_channel(cid) 
+            for member in channel.members:
+                username = member.display_name
+                if username not in job.attendance:
+                    job.attendance[username] = [now, job.delta()]
+                else:
+                    job.attendance[username][1] += job.delta()
+                await ctx.send(f"{username} => {job.attendance[username][0]} : {job.attendance[username][1]}")
+
+        await ctx.send(f"{job.name}")
+
+    async def before_loop(self):
+        await self.bot.wait_until_ready()
+        print("before loop.")
+        # await asyncio.sleep(20) # in seconds
+
+    async def after_loop(self):
+        print("after loop.")
+
+    def __dt_replace(self, time):
+        return datetime.now(TZ).replace(hour=time.hour, minute=time.minute, tzinfo=TZ)
 
     @commands.command()
     @commands.guild_only()
-    async def tnt_start(self, ctx):
-        await self.__watch_start(ctx, TNT_START, TNT_END, TNT_CHANNELS)
-
-    @commands.command()
-    @commands.guild_only()
-    async def watch_status(self, ctx):
-        if (self.taking_attendance):
-            out = (f"Watching from {self.time_start} to {self.time_end} on the follow channels: ")
-            for name in self.watch_channels.keys():
-                out = out + f"{name} "
-            await ctx.send(out)
-        elif (self.waiting):
-            await ctx.send(f"Waiting for {self.time_start} before starting.")
+    async def status(self, ctx):
+        if len(self.jobs) > 0:
+            out = ""
+            for job in self.jobs.values():
+                out = out + job.status() + "\n"
+            await ctx.send("```" + out + "```")
         else:
-            await ctx.send("Not watching anything.")
+            await ctx.send("``` no tasks running. ```")
 
-    async def __watch_start(self, ctx, start, end, *channels):
-        now = datetime.now(TZ).replace(second=0, microsecond=0) # Just prevents trying to start at the same time but the seconds are off
-
-        if (self.waiting or self.taking_attendance):
-            await ctx.send("Already watching.")
+    @commands.command()
+    @commands.guild_only()
+    async def stop(self, ctx, name: str):
+        # Does the task exist?
+        if name not in self.jobs:
+            await ctx.send(f"ERROR: No task named '{name}' found.")
             return
 
-        self.__attendance_reset()
+        # Stop the task
+        self.jobs[name].task.cancel() # stop immediately
+        #self.jobs[name].task.stop() # do one last iteration
 
-        time_start = datetime.strptime(start, "%H:%M")
-        time_end = datetime.strptime(end, "%H:%M")
-        if not time_start:
-            await ctx.send(f"ERROR: {start} is a bad start time.")
+        # Remove task from job list
+        del self.jobs[name]
+
+        await ctx.send(f"Task '{name}' stopped.")
+
+    @commands.command()
+    @commands.guild_only()
+    async def watch(self, ctx, name: str, start: str, end: str, *channels):
+        now = datetime.now(TZ)
+
+        # Task start time and end time validation
+        try:
+            t_start = datetime.strptime(start, "%H:%M")
+        except (ValueError, TypeError) as e:
+            await ctx.send(f"ERROR: start time ({start}) is not correct.")
             return
 
-        if not time_end:
-            await ctx.send(f"ERROR: {end} is a bad end time.")
+        try:
+            t_end = datetime.strptime(end, "%H:%M")
+        except (ValueError, TypeError) as e:
+            await ctx.send(f"ERROR: end time ({end}) is not correct.")
             return
 
-        self.time_start = datetime.now(TZ).replace(hour=time_start.hour, minute=time_start.minute, tzinfo=TZ)
-        self.time_end = datetime.now(TZ).replace(hour=time_end.hour, minute=time_end.minute, tzinfo=TZ)
+        # Convert from time to datetime for the current day
+        dt_start = self.__dt_replace(t_start)
+        dt_end = self.__dt_replace(t_end)
 
-        if self.time_start <= now:
-            await ctx.send(f"ERROR: {start} can't be in the past.")
+        # Check that the time ranges make sense
+        if dt_start < now:
+            await ctx.send(f"ERROR: start time ({start}) can't be in the past.")
             return
 
-        if self.time_end <= self.time_start:
+        if dt_end < dt_start:
+            await ctx.send(f"ERROR: end time ({end}) can't be before start time ({start}).")
             return
 
-        # Already taking attendance, don't do anything
-        if self.taking_attendance:
-            await ctx.send("ERROR: Attendance already started.")
-            return
-
-        # Create list of watch channels
+        # Channel validation
+        watch_channels = {}
         for channel in channels:
             chan = discord.utils.get(ctx.guild.channels, name=channel) 
             if not chan:
                 await ctx.send(f"ERROR: '{channel}' is not a valid channel.")
                 return
-            self.watch_channels[channel] = chan.id
+            watch_channels[channel] = chan.id
 
-        self.context = ctx
-        self.check_attendance.start()
-
-        await ctx.send("Watching channels...")
-
-    @commands.command()
-    @commands.guild_only()
-    async def watch_start(self, ctx, start, end, *channels):
-        await self.__watch_start(ctx, start, end, *channels)
-
-    @commands.command()
-    @commands.guild_only()
-    async def watch_stop(self, ctx):
-        # If attendance is already stopped don't do anything
-        if self.waiting:
-            await ctx.send("Was waiting. Now stopped.")
+        # Check if job name already exists
+        if name in self.jobs:
+            await ctx.send(f"ERROR: A task with that name ({name}) already exists.")
             return
 
-        if not self.taking_attendance:
-            await ctx.send("Nothing to stop.")
-            return
+        # Create new watch job
+        job = WatchJob()
+        job.name = name
+        job.channels = watch_channels
+        job.start = dt_start
+        job.end = dt_end
 
-        self.check_attendance.cancel()
-        self.check_attendance.stop()
-        await ctx.send("Stopped watching channels.")
+        # Generating new task
+        job.task = tasks.loop(seconds=10)(self.watch_loop)
+        job.task.before_loop(self.before_loop)
+        job.task.after_loop(self.after_loop)
 
-    @commands.command()
-    @commands.guild_only()
-    async def attendance_print(self, ctx):
-        if not self.total_time:
-            await ctx.send("Nobody came :(")
-        else:
-            lines = []
-            for member_id, seconds in self.total_time.items():
-                name = self.member_names.get(member_id, str(member_id))
-                minutes = seconds / 60
-                hours = seconds / 3600
-                lines.append(f"{name}: \t {hours:.2f}h {minutes:.2f}m {seconds:2f}s")
-            await ctx.send("```\n" + "\n".join(lines) + "\n```")
+        # Eventhough the task "starts" it can still be in a waiting state
+        job.waiting = True
 
-    def __attendance_reset(self):
-        self.taking_attendance = False
-        self.join_time = {}
-        self.total_time = {}
-        self.member_names = {}
-        self.watch_channels = {} # Optionally we could set this to a default set of channels
-        self.time_start = None
-        self.time_end = None
-        self.context = None
-        self.waiting = False
+        # Add to job list
+        self.jobs[name] = job
 
-    def __flush_member(self, member_id, now):
-        if member_id in self.join_time:
-            session_seconds = (now - self.join_time.pop(member_id)).total_seconds()
-            self.total_time[member_id] = self.total_time.get(member_id, 0) + session_seconds
-
-    @tasks.loop(seconds = 10)
-    async def check_attendance(self):
-        now = datetime.now(TZ)
-        self.waiting = False
-
-        if (now >= self.time_end):
-            await self.attendance_print(self.context)
-            await self.context.send("Finished taking attendance.")
-            self.taking_attendance = False
-            self.check_attendance.cancel()
-            return
-
-        self.taking_attendance = True
-
-        for name, cid in self.watch_channels.items():
-            channel = self.bot.get_channel(cid) 
-
-            for member in channel.members:
-                if member.id not in self.join_time:
-                    self.join_time[member.id] = now
-                    self.member_names[member.id] = member.display_name
-                else:
-                    self.__flush_member(member.id, now)
-                    self.join_time[member.id] = now
-
-                total = self.total_time.get(member.id, 0) 
-                print(f"{member.display_name} => {total}")
-
-    @check_attendance.before_loop
-    async def before_check_attendance(self):
-        await self.bot.wait_until_ready()
-        now = datetime.now(TZ)
-
-        if now < self.time_start:
-            self.waiting = True
-            wait_seconds = (self.time_start - now).total_seconds()
-            print(f"Waiting {wait_seconds:.0f}s until start time ({self.time_start})")
-            await asyncio.sleep(wait_seconds)
-
-
-    @check_attendance.after_loop
-    async def after_check_attendance(self):
-        self.bot.dispatch("attendance_taken")
-
-    @commands.command()
-    @commands.guild_only() # Don't allow this command in DMs, because the DM space has no ctx.
-    async def list_members(self, ctx, *, channel_name: str):
-        channel = discord.utils.get(ctx.guild.channels, name=channel_name)
-        if channel:
-            members = channel.members
-            out = ""
-            for member in members:
-                out = out + member.display_name + "\n"
-            await ctx.send(f"Members in Channel {channel.name} ({channel.id}) \n{out}")
-        else:
-            await ctx.send("ERROR Channel Not Found")
-
-    @commands.command()
-    @commands.guild_only() # Don't allow this command in DMs, because the DM space has no ctx.
-    async def tnt_message(self, ctx):
-        start = int(self.time_start.timestamp()) 
-        end = int(self.time_end.timestamp()) 
-        message = f"""
-Trenched n' Tuesday <t:{start}:R>. Let’s get to seeding. 
-
-Official Run Time: <t:{start}:t> to <t:{end}:t> To Earn Operational Credit: Be in either Tactical Realism East or Central voice channels AND play on our servers for at least 1 hour total 
-
-7th Cav Squad Limits: 
-4 in infantry 
-2 in tanks and artillery
-1 in recon
-
-Please do not :lock: squads (after all, this is a community/recruiting event)
-"""
-        await ctx.send(message)
+        # Start task
+        job.task.start(ctx, job)
+        await ctx.send("new watch loop")
 
 class TNTBot(commands.Bot):
     def __init__(self):
