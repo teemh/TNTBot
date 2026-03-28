@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from discord.ext import tasks,commands
 from datetime import datetime, timedelta, time
 
+# TODO max message send is 2000, catch errors
 # TODO sometimes discord shits the bed with 503s, need to handle those errors
 # TODO gspread or similiar to automatically added data to google sheet
 # TODO log bot output in a log file.
@@ -57,12 +58,14 @@ class MemberRecord:
 
 @dataclass
 class WatchJob:
+    created_by: str
     name: str
     channel_ids: set[int]
     start: datetime
     end: datetime
     report_to: int # report outputs to this channel
     attendance: dict[int, dict[int, MemberRecord]] = field(default_factory=dict)
+    status: str = "waiting"
 
     def __post_init__(self):
         for channel_id in self.channel_ids:
@@ -98,12 +101,15 @@ class WatchJob:
     def report(self) -> dict[int, dict[int, MemberRecord]]:
         return self.attendance
 
-    def pt(self, dt):
-        return dt.strftime("%H:%M")
+    def fstart(self):
+        return self.start.strftime("%H:%M:%S")
 
-    def format_td(self, delta: timedelta):
+    def fend(self):
+        return self.end.strftime("%H:%M:%S")
+
+    def ftotal(self, total):
         """Formats a timedelta to a HH:MM:SS string."""
-        total_seconds = int(delta.total_seconds())
+        total_seconds = int(self.total.total_seconds())
 
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
@@ -134,10 +140,15 @@ class AttendanceCog(commands.Cog):
         lines = []
 
         # Check if jobs are running and if they are actually watching channels
+        lines.append("Watch Status\n")
         for name, (job, task) in self.jobs.items():
-            await ctx.send(f"Job {name} exists") 
+            line = f"'{job.name}' | {job.status} | {job.created_by} | {job.fstart()} | {job.fend()} |"
+            for cid in job.channel_ids:
+                channel = ctx.guild.get_channel(int(cid))
+                line = line + (f" {channel.name}")
+            lines.append(line)
 
-        #TODO finish status
+        await ctx.send("```" + "\n".join(lines) + "```")
 
     @commands.command()
     async def stop(self, ctx: commands.Context, name: str):
@@ -202,11 +213,12 @@ class AttendanceCog(commands.Cog):
 
         # Create a new watch job
         job = WatchJob(
+            created_by = ctx.author.display_name,
             name=name,
             channel_ids = {c.id for c in channels},
             start = dt_start,
             end = dt_end,
-            report_to = ctx.channel.id
+            report_to = ctx.channel.id,
         )
 
         # Create new discord task
@@ -221,7 +233,6 @@ class AttendanceCog(commands.Cog):
         )
 
     async def job_start(self, job: WatchJob, channels: list[discord.VoiceChannel]) -> None:
-        cancelled = False
         try:
             print(f"Job '{job.name}' started")
 
@@ -232,6 +243,9 @@ class AttendanceCog(commands.Cog):
                 print(f"Job '{job.name}' waiting for {remaining} seconds to start.")
                 await asyncio.sleep(remaining)
 
+            # Waiting is over start watching.
+            job.status = "watching"
+
             # Add channels being watched by job to watch list
             for channel in channels:
                 self.watch_list[channel.id].append(job)
@@ -241,7 +255,7 @@ class AttendanceCog(commands.Cog):
                 for member in channel.members:
                     job.record_join(channel.id, member)
 
-            # Wait until the end time, then finish
+            # Keep watching until the end time, then finish
             now = datetime.now(TZ)
             remaining = (job.end - now).total_seconds()
             if remaining > 0:
@@ -249,11 +263,11 @@ class AttendanceCog(commands.Cog):
                 await asyncio.sleep(remaining)
 
         except asyncio.CancelledError:
-            cancelled = True
+            job.status = "cancelled" # cancelled
 
         finally:
             self.job_cleanup(job)
-            await self.job_finished(job, cancelled)
+            await self.job_finished(job)
 
     def job_cleanup(self, job: WatchJob):
         print(f"Job '{job.name}' cleanup.")
@@ -268,9 +282,10 @@ class AttendanceCog(commands.Cog):
                 if not self.watch_list[channel_id]:
                     del self.watch_list[channel_id]
 
-    async def job_finished(self, job: WatchJob, cancelled: bool = False):
-        if cancelled:
-            print(f"Job '{job.name}' finished early.")
+    async def job_finished(self, job: WatchJob):
+        if job.status == "cancelled":
+            print(f"Job '{job.name}' cancelled.")
+            return
         else:
             print(f"Job '{job.name}' finished.")
 
@@ -293,7 +308,7 @@ class AttendanceCog(commands.Cog):
         lines = []
         if merged:
             for member_id, (display_name, total_duration) in merged.items():
-                lines.append(f"{display_name};{job.format_td(total_duration)}")
+                lines.append(f"{display_name};{job.ftotal(total_duration)}")
         else:
             lines.append("No members recorded.")
         output = "\n".join(lines)
