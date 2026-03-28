@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, time
 # TODO on first job unregister the on_voice_state_update event method
 # TODO talk to bot via DMs rather than in chat?
 # TODO what if between start and endtime is > 24hours
-
+# TODO should bot report back usings dms or in chat?
 # TODO redo, status and stop functions and list (users in channel)
 
 # TNTBOT INFO
@@ -107,14 +107,17 @@ class WatchJob:
     def fend(self):
         return self.end.strftime("%H:%M:%S")
 
-    def ftotal(self, total):
+    def ftimedelta(self, td: timedelta):
         """Formats a timedelta to a HH:MM:SS string."""
-        total_seconds = int(self.total.total_seconds())
+        total_seconds = int(td.total_seconds())
 
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
 
         return f'{hours:02}:{minutes:02}:{seconds:02}'
+
+    def annouce(self):
+        return None
 
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
@@ -129,6 +132,24 @@ class AttendanceCog(commands.Cog):
 
     def dt_replace(self, time: datetime):
         return datetime.now(TZ).replace(hour=time.hour, minute=time.minute, tzinfo=TZ)
+
+    @commands.command()
+    async def poll(self, ctx: commands.Context, channel_name: str):
+        channel = discord.utils.get(ctx.guild.channels, name=channel_name)
+        if not channel:
+            await ctx.send(f"ERROR: '{channel_name}' is not a valid channel.")
+            return
+        elif not isinstance(channel, discord.VoiceChannel):
+            await ctx.send(f"ERROR: '{channel_name}' is not a voice channel.")
+            return
+
+        members = channel.members
+        lines = []
+        lines.append(f"{len(members)} members in '{channel_name}':\n")
+        for member in members:
+            lines.append(f"{member.display_name}")
+
+        await ctx.send("```" + "\n".join(lines) + "```")
 
     @commands.command()
     async def status(self, ctx: commands.Context):
@@ -199,7 +220,7 @@ class AttendanceCog(commands.Cog):
             await ctx.send(f"ERROR: end time ({end}) can't be before start time ({start}).")
             return
 
-        # Find channel ids based on names and make sure channel exists and is a voice channel.
+        # Find channel ids based on names and make sure channel exists and are a voice channels.
         channels = []
         for channel_name in channel_names:
             channel = discord.utils.get(ctx.guild.channels, name=channel_name)
@@ -221,15 +242,15 @@ class AttendanceCog(commands.Cog):
             report_to = ctx.channel.id,
         )
 
-        # Create new discord task
+        # Create new bot task
         task = asyncio.create_task(self.job_start(job, channels), name=f"watchjob-{name}")
 
-        # Record the job it's task
+        # Assign the job it's task
         self.jobs[name] = (job, task)
 
         await ctx.send(
-            f"Watch job `{name}` scheduled for {len(channels)} channel(s) "
-            f"from `{dt_start.isoformat()}` to `{dt_end.isoformat()}`."
+            f"Watch job `{job.name}` scheduled for {len(channels)} channel(s) "
+            f"from `{job.fstart()}` to `{job.fend()}`."
         )
 
     async def job_start(self, job: WatchJob, channels: list[discord.VoiceChannel]) -> None:
@@ -240,7 +261,8 @@ class AttendanceCog(commands.Cog):
             now = datetime.now(TZ)
             remaining = (job.start - now).total_seconds()
             if job.start > now:
-                print(f"Job '{job.name}' waiting for {remaining} seconds to start.")
+                if DEBUG:
+                    print(f"Job '{job.name}' waiting for {remaining} seconds to start.")
                 await asyncio.sleep(remaining)
 
             # Waiting is over start watching.
@@ -259,7 +281,8 @@ class AttendanceCog(commands.Cog):
             now = datetime.now(TZ)
             remaining = (job.end - now).total_seconds()
             if remaining > 0:
-                print(f"Job '{job.name}' waiting for {remaining} seconds, then stopping.")
+                if DEBUG:
+                    print(f"Job '{job.name}' waiting for {remaining} seconds, then stopping.")
                 await asyncio.sleep(remaining)
 
         except asyncio.CancelledError:
@@ -308,12 +331,11 @@ class AttendanceCog(commands.Cog):
         lines = []
         if merged:
             for member_id, (display_name, total_duration) in merged.items():
-                lines.append(f"{display_name};{job.ftotal(total_duration)}")
+                lines.append(f"{display_name};{job.ftimedelta(total_duration)}")
         else:
             lines.append("No members recorded.")
         output = "\n".join(lines)
 
-        # TODO use dms instead?
         # Post to the report channel
         title = f"{job.name} final attendance sheet\n"
         channel = self.bot.get_channel(job.report_to)
@@ -324,19 +346,21 @@ class AttendanceCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        print(f"{member.display_name}")
-
         # If there are no channels to watch, don't do anything
         if not self.watch_list:
             return
 
         # Member left the channel, record their duration
         if before.channel and before.channel.id in self.watch_list:
+            if DEBUG:
+                print(f"{member.display_name} left channel.")
             for job in self.watch_list[before.channel.id]:
                 job.record_leave(before.channel.id, member)
 
         # Member joined the join, record their last_joined
         if after.channel and after.channel.id in self.watch_list:
+            if DEBUG:
+                print(f"{member.display_name} joined channel.")
             for job in self.watch_list[after.channel.id]:
                 job.record_join(after.channel.id, member)
 
@@ -369,7 +393,8 @@ class TNTBot(commands.Bot):
 
     async def on_message(self, message):
         if (message.author.id in ALLOWED_USERS):
-            print(f"{message.content}")
+            if DEBUG:
+                print(f"{message.content}")
             await self.process_commands(message)
 
     async def on_command_error(self, ctx, error):
