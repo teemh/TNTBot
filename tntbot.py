@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, time
 # TODO when there are no jobs unregister the on_voice_state_update event method
 # TODO on first job unregister the on_voice_state_update event method
 # TODO talk to bot via DMs rather than in chat?
+# TODO what if between start and endtime is > 24hours
 
 # TODO redo, status and stop functions and list (users in channel)
 
@@ -122,6 +123,30 @@ class AttendanceCog(commands.Cog):
 
     def dt_replace(self, time: datetime):
         return datetime.now(TZ).replace(hour=time.hour, minute=time.minute, tzinfo=TZ)
+
+    @commands.command()
+    async def status(self, ctx: commands.Context):
+        if not self.jobs:
+            await ctx.send("No watch jobs currently running.")
+            return
+
+        now = datetime.now(TZ)
+        lines = []
+
+        # Check if jobs are running and if they are actually watching channels
+        for name, (job, task) in self.jobs.items():
+            await ctx.send(f"Job {name} exists") 
+
+        #TODO finish status
+
+    @commands.command()
+    async def stop(self, ctx: commands.Context, name: str):
+        if name not in self.jobs:
+            await ctx.send(f"No active task named `{name}` found.")
+
+        _, task = self.jobs[name]
+        task.cancel()
+        await ctx.send(f"Task `{name}` has been stopped.")
 
     @commands.command()
     async def watch(self, ctx: commands.Context, name: str, start: str, end: str, *channel_names: str):
