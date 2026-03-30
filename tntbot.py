@@ -62,10 +62,11 @@ class MemberRecord:
             self.duration += datetime.now(TZ) - self.last_joined
             self.last_joined = None
 
-    def stop(self):
-        # If the task stops while the member is still in channel
-        # update the duration one last time
-        self.on_leave() 
+    # when we want an updated duration without stopping
+    def snapshot(self):
+        if self.last_joined is not None:
+            self.on_leave()
+            self.on_join()
 
 @dataclass
 class WatchJob:
@@ -113,7 +114,9 @@ class WatchJob:
             self.attendance[channel_id][member.id] = record
         else:
             record = self.attendance[channel_id][member.id]
-            record.on_join()
+            # snapshot because of scenarios where a member could join while already joined.
+            # such as when recovering from errors.
+            record.snapshot()
 
     def record_leave(self, channel_id: int, member: discord.Member):
         if not self.valid_member(member):
@@ -215,7 +218,7 @@ class AttendanceCog(commands.Cog):
     def fnow(self):
         return datetime.now(TZ).strftime("%H:%M:%S")
 
-    @tasks.loop(minutes=1.0)
+    @tasks.loop(minutes=10.0)
     async def can_sleep(self):
         if DEBUG:
             print("Checking if bot can go to sleep")
@@ -484,15 +487,28 @@ class AttendanceCog(commands.Cog):
 
     async def job_finished(self, job: WatchJob):
         if job.status == "cancelled":
-            print(f"Job `{job.name}` cancelled.")
+            print(f"Task `{job.name}` cancelled.")
             return
         else:
-            print(f"Job `{job.name}` finished.")
+            print(f"Task `{job.name}` finished.")
 
-        # Stop recording the members which also records their last status
+        await self.job_report(job)
+
+    @commands.command()
+    async def report(self, ctx: commands.Context, job_name: str):
+        if not job_name in self.jobs.keys():
+            await ctx.send(f"ERROR: Task `{job_name}` not found.")
+            return
+
+        job, task = self.jobs[job_name]
+
+        await self.job_report(job)
+
+    async def job_report(self, job: WatchJob):
+        # Trigger on_leave to get a final snapshot of the attendance
         for members in job.attendance.values():
             for record in members.values():
-                record.stop()
+                record.snapshot()
 
         # Merge member durations across all watched channels
         merged: dict[int, tuple[str, timedelta]] = {}
@@ -521,7 +537,7 @@ class AttendanceCog(commands.Cog):
         else:
             print(f"Could not find report channel `{job.report_to}`.")
 
-    #@commands.Cog.listener()
+    #@commands.Cog.listener() this is set programmatically
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         # If there are no channels to watch, don't do anything
         if not self.watch_list:
