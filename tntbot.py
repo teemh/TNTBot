@@ -70,6 +70,7 @@ class MemberRecord:
 
 @dataclass
 class WatchJob:
+    member_id: int # needed to dm members
     created_by: str
     name: str
     channel_ids: set[int]
@@ -142,9 +143,6 @@ class WatchJob:
 
         return f'{hours:02}:{minutes:02}:{seconds:02}'
 
-    def annouce(self):
-        return None
-
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -159,9 +157,12 @@ class AttendanceCog(commands.Cog):
         self.listening: bool = False
 
         # NOTE: Bot starts asleep because the can_sleep task will trigger immediately on start.
-
-        # Check if no jobs so bot can sleep.
         self.can_sleep.start()
+
+    # direct message member
+    async def dm(self, member_id: int, message: str):
+        member = await self.bot.fetch_user(member_id)
+        await member.send(message)
 
     @commands.command(enabled=DEBUG)
     async def debug_on_resumed(self, ctx):
@@ -260,6 +261,7 @@ class AttendanceCog(commands.Cog):
         await ctx.send("Bot is now awake and listening.")
 
     @commands.command()
+    @commands.guild_only()
     async def poll(self, ctx: commands.Context, channel_name: str):
         channel = discord.utils.get(ctx.guild.channels, name=channel_name)
 
@@ -341,10 +343,12 @@ class AttendanceCog(commands.Cog):
         await ctx.send(f"Task `{name}` has been stopped.")
 
     @commands.command()
+    @commands.guild_only()
     async def watch_cav(self, ctx: commands.Context, name: str, start: str, duration: str, *channel_names: str):
         await self.watch(ctx, name, start, duration, *channel_names, cav_only = True)
 
     @commands.command()
+    @commands.guild_only()
     async def watch(self, ctx: commands.Context, name: str, start: str, duration: str, *channel_names: str, cav_only = False):
         if not self.listening:
             await ctx.send(f"ERROR: Cannot execute this command while Bot is sleeping.")
@@ -413,6 +417,7 @@ class AttendanceCog(commands.Cog):
 
         # Create a new watch job
         job = WatchJob(
+            member_id = ctx.author.id,
             created_by = ctx.author.display_name,
             name=name,
             channel_ids = {c.id for c in channels},
@@ -534,6 +539,7 @@ class AttendanceCog(commands.Cog):
         channel = self.bot.get_channel(job.report_to)
         if channel:
             await channel.send(title + "```" + output + "```")
+            #await self.dm(job.member_id, title + "```" + output + "```")
         else:
             print(f"Could not find report channel `{job.report_to}`.")
 
