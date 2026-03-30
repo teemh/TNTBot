@@ -160,6 +160,53 @@ class AttendanceCog(commands.Cog):
         # Check if no jobs so bot can sleep.
         self.can_sleep.start()
 
+    @commands.command(enabled=DEBUG)
+    async def debug_on_resumed(self, ctx):
+        await self.on_resumed()
+
+    @commands.Cog.listener()
+    async def on_resumed(self): # Called when the bot has to reconnect
+        # If reconnected we have to take attendance of the whole channel again to make sure it's up to date
+        if DEBUG:
+            print(f"Bot resumed at {self.fnow()}, taking attendance to update...")
+
+        now = datetime.now(TZ)
+
+        for name, (job, task) in self.jobs.items():
+            # If bot was disconnect the whole time of a task window just cancel it
+            if now > job.end:
+                task.status = "cancelled"
+                task.cancel()
+                if DEBUG:
+                    print(f"Task `{job.name} was cancelled, because bot was disconnected at time.")
+
+            if job.status != "watching":
+                return
+
+            if DEBUG:
+                print(f"Taking attendance on all watched channels.")
+
+            for channel_id in job.channel_ids:
+                channel = self.bot.get_channel(channel_id)
+                if not channel:
+                    continue
+
+                # Who is in the channel
+                in_channel: set[int] = set()
+
+                # Update members who are still in channel
+                for member in channel.members:
+                    in_channel.add(member.id)
+                    job.record_join(channel_id, member)
+
+                # Update members aren't in channel anymore
+                for member_id, record in job.attendance[channel_id].items():
+                    if record.last_joined is not None:
+                        if member_id not in in_channel:
+                            if DEBUG:
+                                print(f"`{record.display_name}` left during outage, record that they left now.")
+                            record.on_leave()
+
     def cog_unload(self):
         # if cog is unloaded while tasks are running, cancel them all
         for name, (job, task) in list(self.jobs.items()):
@@ -418,7 +465,6 @@ class AttendanceCog(commands.Cog):
 
         except asyncio.CancelledError:
             job.status = "cancelled" # cancelled
-
         finally:
             self.job_cleanup(job)
             await self.job_finished(job)

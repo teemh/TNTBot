@@ -1,0 +1,30 @@
+Discord Connection Issues
+
+-Override on_disconnect and on_resumed to log when the bot drops and reconnects
+-When the bot resumes, re-snapshot all watched channels and reconcile against what was recorded before the drop — members who left/joined during the outage would otherwise be missed
+-Track a "disconnected at" timestamp so you know how big the gap was and can flag reports that had an outage during them
+
+503 / API Errors (already in your TODOs)
+
+-Wrap channel.send() calls in a retry loop with exponential backoff
+-Do the same for any channel.members lookups during job startup
+
+Job / Task Failures
+
+-Wrap job_start internals in a broader try/except so unexpected exceptions don't silently kill a task — at minimum log them and notify the report channel
+-If a task dies unexpectedly, attempt to auto-restart it if there's still time left in the watch window
+
+Data Safety
+
+-Periodically flush attendance data to a local file (your log file TODO) so if the bot crashes mid-job, you don't lose everything
+-On startup, check for any leftover recovery files and alert an admin that a crash occurred
+
+Reporting
+
+-Flag the final attendance report if a disconnect was detected during that job's watch window, so the person reading it knows the data may have gaps
+-Include the total outage duration in the report if one occurred
+
+General Hygiene
+
+-Add a global on_error handler to catch anything that slips through
+-Add startup validation — confirm all channels in a job still exist and the bot still has permission to see them before the job begins watching
