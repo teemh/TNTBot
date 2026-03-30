@@ -28,6 +28,7 @@ from google.oauth2.service_account import Credentials
 # TODO have an admin be able to add and remove allowed users
 # TODO refactor debug messages and general output messages
 # TODO channels have spaces in names so use that to break them into lists have to do "channel a" "channel b"
+# TODO have a loop that dumps the attendance into a log file as backups if something bad happens
 
 # NOTE this bot assumes display_names are unique because 7cav requires it anyway
 
