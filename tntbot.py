@@ -20,7 +20,6 @@ from logging.handlers import RotatingFileHandler
 # TODO sometimes discord shits the bed with 503s, need to handle those errors
 # TODO gspread or similiar to automatically added data to google sheet
 #       NOTE the above requires google app registration which doubles "paper work" 
-# TODO log attendance in a log file.
 # TODO should bot report back usings dms or in chat?
 # TODO have an admin be able to add and remove allowed users
 # TODO have a loop that dumps the attendance into a log file as backups if something bad happens
@@ -125,8 +124,7 @@ class WatchJob:
             self.attendance[channel_id][member.id] = record
         else:
             record = self.attendance[channel_id][member.id]
-            # snapshot because of scenarios where a member could join while already joined.
-            # such as when recovering from errors.
+            # snapshot because members could join while already joined because the bot was disconnected.
             record.snapshot()
 
     def record_leave(self, channel_id: int, member: discord.Member):
@@ -162,6 +160,27 @@ class AttendanceCog(commands.Cog):
         # For polling channels in real time and comparing the results from the previous poll
         self.poll_cache: dict[str, set[str]] = {}
 
+    @commands.command(enabled=DEBUG)
+    async def debug_on_disconnect(self, ctx):
+        await self.on_disconnect()
+
+    @commands.Cog.listener()
+    async def on_disconnect(self):
+        # On disconnect build reports for each job and safe to log file
+        for name, (job, task) in self.jobs.items():
+            report = self.build_report(job)
+            LOG.info(f"Report created for task: {name}.")
+            try:
+                with open(f"{name}.log", "w") as f:
+                    f.write(self.build_report(job))
+                    LOG.info(f"Report written to {name}.log")
+            except OSError as e:
+                LOG.error(f"Failed to save report for job `{job.name}`: {e}")
+
+        job.interrupted = True
+
+        LOG.info("Bot was disconnected.")
+
     # direct message member
     async def dm(self, member_id: int, message: str):
         member = await self.bot.fetch_user(member_id)
@@ -190,8 +209,6 @@ class AttendanceCog(commands.Cog):
                 return
 
             LOG.info(f"Taking attendance on all watched channels.")
-
-            job.interrupted = True
 
             for channel_id in job.channel_ids:
                 channel = self.bot.get_channel(channel_id)
@@ -282,14 +299,16 @@ class AttendanceCog(commands.Cog):
 
         # Check if jobs are running and if they are actually watching channels
         lines.append("Watch Status\n")
+        line.append("```")
         for name, (job, task) in self.jobs.items():
             line = f"'{job.name}' | {job.created_by} | {job.status} | {job.fstart()} | {job.fend()} |"
             for cid in job.channel_ids:
                 channel = ctx.guild.get_channel(int(cid))
                 line = line + (f" {channel.name}")
             lines.append(line)
+        line.append("```")
 
-        await ctx.send("```" + "\n".join(lines) + "```")
+        await ctx.send("\n".join(lines))
 
     @commands.command()
     async def stop(self, ctx: commands.Context, name: str):
@@ -460,10 +479,10 @@ class AttendanceCog(commands.Cog):
 
         await self.job_report(job)
 
-    async def job_report(self, job: WatchJob):
+    def build_report(self, job: WatchJob):
         now = datetime.now(TZ)
 
-        # Trigger on_leave to get a final snapshot of the attendance
+        # Get a snapshot of the attendance
         for members in job.attendance.values():
             for record in members.values():
                 record.snapshot()
@@ -499,18 +518,25 @@ class AttendanceCog(commands.Cog):
         else:
             lines.append("No members recorded.")
 
+        return "\n".join(lines)
+
+    async def job_report(self, job: WatchJob):
+        report = self.build_report(job)
         channel = self.bot.get_channel(job.report_to)
+
         if channel:
-            await channel.send("\n".join(lines))
-            #await self.dm(job.member_id, title + "```" + output + "```")
+            await channel.send(report)
+            #await self.dm(job.member_id, report)
         else:
             LOG.error(f"Could not find report channel `{job.report_to}`.")
 
-    #@commands.Cog.listener() this is set programmatically
+    @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         # If there are no channels to watch, don't do anything
         if not self.watch_list:
             return
+
+        LOG.info(f"Triggered on_voice_state_update event.")
 
         # Member left the channel, record their duration
         if before.channel and before.channel.id in self.watch_list:
