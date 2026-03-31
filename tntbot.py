@@ -172,7 +172,8 @@ class AttendanceCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_resumed(self): # Called when the bot has to reconnect
-        # If reconnected we have to take attendance of the whole channel again to make sure it's up to date
+        # If reconnected we have to take attendance of all the channels being watched
+        # to make sure it's up to date
         LOG.info(f"Bot resumed at {self.fnow()}, taking attendance to update...")
 
         now = datetime.now(TZ)
@@ -548,13 +549,43 @@ class TNTBot(commands.Bot):
             await self.process_commands(message)
 
     async def on_command_error(self, ctx, error):
+        # Command does not exist
         if isinstance(error, commands.CommandNotFound):
             await ctx.send(f"Unknown command. Use `{ctx.prefix}help` to see available commands.")
             return
 
+        # Command missing required argument
         elif isinstance(error, commands.MissingRequiredArgument):
             await ctx.send(f"Error: Missing Required Arugment(s)")
             return
+
+        # Command is on cooldown
+        elif isinstance(error, commands.CommandOnCooldown):
+            if ctx.author.id is self.bot.owner_id:
+                ctx.command.reset_cooldown(ctx)
+                return await ctx.command.reinvoke(ctx)
+            cooldowns = {
+                commands.BucketType.default: f'for the whole bot.',
+                commands.BucketType.user: f'for you.',
+                commands.BucketType.guild: f'for this server.',
+                commands.BucketType.channel: f'for this channel.',
+                commands.BucketType.member: f'cooldown for you.',
+                commands.BucketType.category: f'for this channel category.',
+                commands.BucketType.role: f'for your role.'
+            }
+            return await ctx.send(f'The command `{ctx.command}` is on cooldown {cooldowns[error.cooldown.type]} ')
+
+        # Bot lacks permissions
+        elif isinstance(error, commands.BotMissingPermissions):
+            permissions = '\n'.join([f'> {permission}' for permission in error.missing_perms])
+            message = f'Bot is missing the following permissions required to run the command `{ctx.command}`.\n{permissions}'
+            try:
+                return await ctx.send(message)
+            except discord.Forbidden:
+                try:
+                    return await ctx.author.send(message)
+                except discord.Forbidden:
+                    return
 
         raise error
 
