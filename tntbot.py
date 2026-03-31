@@ -55,7 +55,7 @@ logging.basicConfig(
     ]
 )
 
-logger = logging.getLogger('tntbot')
+LOG = logging.getLogger('tntbot')
 
 @dataclass
 class MemberRecord:
@@ -180,7 +180,7 @@ class AttendanceCog(commands.Cog):
     @commands.Cog.listener()
     async def on_resumed(self): # Called when the bot has to reconnect
         # If reconnected we have to take attendance of the whole channel again to make sure it's up to date
-        log.info(f"Bot resumed at {self.fnow()}, taking attendance to update...")
+        LOG.info(f"Bot resumed at {self.fnow()}, taking attendance to update...")
 
         now = datetime.now(TZ)
 
@@ -189,14 +189,12 @@ class AttendanceCog(commands.Cog):
             if now > job.end:
                 task.status = "cancelled"
                 task.cancel()
-                if DEBUG:
                     print(f"Task `{job.name} was cancelled, because bot was disconnected at time.")
 
             if job.status != "watching":
                 return
 
-            if DEBUG:
-                print(f"Taking attendance on all watched channels.")
+            LOG.info(f"Taking attendance on all watched channels.")
 
             for channel_id in job.channel_ids:
                 channel = self.bot.get_channel(channel_id)
@@ -215,8 +213,7 @@ class AttendanceCog(commands.Cog):
                 for member_id, record in job.attendance[channel_id].items():
                     if record.last_joined is not None:
                         if member_id not in in_channel:
-                            if DEBUG:
-                                print(f"`{record.display_name}` left during outage, record that they left now.")
+                            LOG.debug(f"`{record.display_name}` left during outage, record that they left now.")
                             record.on_leave()
 
     def cog_unload(self):
@@ -229,15 +226,13 @@ class AttendanceCog(commands.Cog):
 
     @tasks.loop(minutes=10.0)
     async def can_sleep(self):
-        logging.info("Checking if bot can go to sleep")
+        LOG.info("Checking if bot can go to sleep")
         if not self.jobs:
             self.bot.remove_listener(self.on_voice_state_update)
             self.listening = False
-            if DEBUG:
-                print("No tasks, going to sleep")
+            LOG.info("No tasks, going to sleep")
         else:
-            if DEBUG:
-                print("Tasks exist, can't sleep.")
+            LOG.info("Tasks exist, can't sleep.")
 
     @can_sleep.before_loop
     async def before_can_sleep(self):
@@ -447,15 +442,13 @@ class AttendanceCog(commands.Cog):
 
     async def job_start(self, job: WatchJob, channels: list[discord.VoiceChannel]) -> None:
         try:
-            if DEBUG:
-                print(f"Job `{job.name}` started")
+            LOG.info(f"Job `{job.name}` started")
 
             # Wait until the start time
             now = datetime.now(TZ)
             remaining = (job.start - now).total_seconds()
             if job.start > now:
-                if DEBUG:
-                    print(f"Task `{job.name}` waiting for {remaining} seconds to start.")
+                LOG.info(f"Task `{job.name}` waiting for {remaining} seconds to start.")
                 await asyncio.sleep(remaining)
 
             # Waiting is over start watching.
@@ -474,8 +467,7 @@ class AttendanceCog(commands.Cog):
             now = datetime.now(TZ)
             remaining = (job.end - now).total_seconds()
             if remaining > 0:
-                if DEBUG:
-                    print(f"Task `{job.name}` watching for {remaining} seconds, then stopping.")
+                LOG.info(f"Task `{job.name}` watching for {remaining} seconds, then stopping.")
                 await asyncio.sleep(remaining)
 
         except asyncio.CancelledError:
@@ -564,15 +556,13 @@ class AttendanceCog(commands.Cog):
 
         # Member left the channel, record their duration
         if before.channel and before.channel.id in self.watch_list:
-            if DEBUG:
-                print(f"{member.display_name} left channel.")
+            LOG.debug(f"{member.display_name} left channel.")
             for job in self.watch_list[before.channel.id]:
                 job.record_leave(before.channel.id, member)
 
         # Member joined the join, record their last_joined
         if after.channel and after.channel.id in self.watch_list:
-            if DEBUG:
-                print(f"{member.display_name} joined channel.")
+            LOG.debug(f"{member.display_name} joined channel.")
             for job in self.watch_list[after.channel.id]:
                 job.record_join(after.channel.id, member)
 
@@ -608,8 +598,7 @@ class TNTBot(commands.Bot):
 
     async def on_message(self, message):
         if (message.author.id in ALLOWED_USERS):
-            if DEBUG:
-                print(f"{message.content}")
+            LOG.info(f"{message.author.display} sent message `{message.content}`")
             await self.process_commands(message)
 
     async def on_command_error(self, ctx, error):
