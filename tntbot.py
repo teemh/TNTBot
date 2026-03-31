@@ -161,13 +161,6 @@ class AttendanceCog(commands.Cog):
         # For polling channels in real time and comparing the results from the previous poll
         self.poll_cache: dict[str, set[str]] = {}
 
-        # If the bot isn't doing anything we can put it to sleep
-        # so on voice enter and leave events stop being sent to it by discord.
-        self.listening: bool = False
-
-        # NOTE: Bot starts asleep because the can_sleep task will trigger immediately on start.
-        self.can_sleep.start()
-
     # direct message member
     async def dm(self, member_id: int, message: str):
         member = await self.bot.fetch_user(member_id)
@@ -224,44 +217,6 @@ class AttendanceCog(commands.Cog):
     def fnow(self):
         return datetime.now(TZ).strftime("%H:%M:%S")
 
-    @tasks.loop(minutes=10.0)
-    async def can_sleep(self):
-        LOG.info("Checking if bot can go to sleep")
-        if not self.jobs:
-            self.bot.remove_listener(self.on_voice_state_update)
-            self.listening = False
-            LOG.info("No tasks, going to sleep")
-        else:
-            LOG.info("Tasks exist, can't sleep.")
-
-    @can_sleep.before_loop
-    async def before_can_sleep(self):
-        await self.bot.wait_until_ready()
-
-    @commands.command()
-    async def sleep(self, ctx: commands.Context):
-        if not self.listening:
-            await ctx.send("Already sleeping.")
-            return
-
-        if self.jobs:
-            await ctx.send("Can't sleep while there are tasks left.")
-            return
-
-        self.bot.remove_listener(self.on_voice_state_update)
-        self.listening = False
-        await ctx.send("Bot is now sleeping.")
-
-    @commands.command()
-    async def awake(self, ctx: commands.Context):
-        if self.listening:
-            await ctx.send("Already is awake and listening.")
-            return
-
-        self.bot.add_listener(self.on_voice_state_update)
-        self.listening = True
-        await ctx.send("Bot is now awake and listening.")
-
     @commands.command()
     @commands.guild_only()
     async def poll(self, ctx: commands.Context, channel_name: str):
@@ -314,11 +269,6 @@ class AttendanceCog(commands.Cog):
 
     @commands.command()
     async def status(self, ctx: commands.Context):
-        if self.listening:
-            await ctx.send("Bot is awake and listening.")
-        else:
-            await ctx.send("Bot is sleeping.")
-
         if not self.jobs:
             await ctx.send("No watch jobs currently running.")
             return
@@ -354,10 +304,6 @@ class AttendanceCog(commands.Cog):
     @commands.command()
     @commands.guild_only()
     async def watch(self, ctx: commands.Context, name: str, start: str, duration: str, *channel_names: str, cav_only = False):
-        if not self.listening:
-            await ctx.send(f"ERROR: Cannot execute this command while Bot is sleeping.")
-            return
-
         now = datetime.now(TZ)
 
         # Check if there are channels to watch
