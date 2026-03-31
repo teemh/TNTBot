@@ -20,16 +20,9 @@ from logging.handlers import RotatingFileHandler
 # TODO sometimes discord shits the bed with 503s, need to handle those errors
 # TODO gspread or similiar to automatically added data to google sheet
 #       NOTE the above requires google app registration which doubles "paper work" 
-# TODO log bot output in a log file.
 # TODO log attendance in a log file.
-# TODO when there are no jobs unregister the on_voice_state_update event method
-# TODO on first job unregister the on_voice_state_update event method
-# TODO talk to bot via DMs rather than in chat?
-# TODO what if between start and endtime is > 24hours
 # TODO should bot report back usings dms or in chat?
-# TODO change created_by from member display_name to member id?
 # TODO have an admin be able to add and remove allowed users
-# TODO refactor debug messages and general output messages
 # TODO have a loop that dumps the attendance into a log file as backups if something bad happens
 
 # NOTE this bot assumes display_names are unique because 7cav requires it anyway
