@@ -89,6 +89,7 @@ class WatchJob:
     attendance: dict[int, dict[int, MemberRecord]] = field(default_factory=dict)
     status: str = "waiting"
     cav_only: bool = False
+    interrupted: bool = False
 
     def __post_init__(self):
         for channel_id in self.channel_ids:
@@ -189,6 +190,8 @@ class AttendanceCog(commands.Cog):
                 return
 
             LOG.info(f"Taking attendance on all watched channels.")
+
+            job.interrupted = True
 
             for channel_id in job.channel_ids:
                 channel = self.bot.get_channel(channel_id)
@@ -477,22 +480,28 @@ class AttendanceCog(commands.Cog):
 
         # Build output string
         lines = []
-        if merged:
-            for member_id, (display_name, total_duration) in merged.items():
-                lines.append(f"{display_name};{job.ftimedelta(total_duration)}")
-        else:
-            lines.append("No members recorded.")
-        output = "\n".join(lines)
+
+        if job.interrupted:
+            lines.append("This task was interrupted and the results may not be accurate.")
 
         # Post to the report channel
         if now > job.end:
-            title = f"`{job.name}` final attendance:\n"
+            lines.append(f"`{job.name}` final attendance")
         else:
-            title = f"`{job.name}` current attendance:\n"
+            lines.append(f"`{job.name}` current attendance")
+
+        # Added users in a nice format to be copied pasted.
+        if merged:
+            lines.append("```")
+            for member_id, (display_name, total_duration) in merged.items():
+                lines.append(f"{display_name};{job.ftimedelta(total_duration)}")
+            lines.append("```")
+        else:
+            lines.append("No members recorded.")
 
         channel = self.bot.get_channel(job.report_to)
         if channel:
-            await channel.send(title + "```" + output + "```")
+            await channel.send("\n".join(lines))
             #await self.dm(job.member_id, title + "```" + output + "```")
         else:
             LOG.error(f"Could not find report channel `{job.report_to}`.")
@@ -566,12 +575,12 @@ class TNTBot(commands.Bot):
                 return await ctx.command.reinvoke(ctx)
             cooldowns = {
                 commands.BucketType.default: f'for the whole bot.',
-                commands.BucketType.user: f'for you.',
-                commands.BucketType.guild: f'for this server.',
+                commands.BucketType.user:    f'for you.',
+                commands.BucketType.guild:   f'for this server.',
                 commands.BucketType.channel: f'for this channel.',
-                commands.BucketType.member: f'cooldown for you.',
-                commands.BucketType.category: f'for this channel category.',
-                commands.BucketType.role: f'for your role.'
+                commands.BucketType.member:  f'cooldown for you.',
+                commands.BucketType.category:f'for this channel category.',
+                commands.BucketType.role:    f'for your role.'
             }
             return await ctx.send(f'The command `{ctx.command}` is on cooldown {cooldowns[error.cooldown.type]} ')
 
