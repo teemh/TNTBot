@@ -9,9 +9,12 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from discord.ext import tasks,commands
 from datetime import datetime, timedelta, time
+import logging
+from logging.handlers import RotatingFileHandler
 
-import gspread
-from google.oauth2.service_account import Credentials
+# for google sheet functionality, maybe later
+#import gspread
+#from google.oauth2.service_account import Credentials
 
 # TODO max message send is 2000, catch errors
 # TODO sometimes discord shits the bed with 503s, need to handle those errors
@@ -27,7 +30,6 @@ from google.oauth2.service_account import Credentials
 # TODO change created_by from member display_name to member id?
 # TODO have an admin be able to add and remove allowed users
 # TODO refactor debug messages and general output messages
-# TODO channels have spaces in names so use that to break them into lists have to do "channel a" "channel b"
 # TODO have a loop that dumps the attendance into a log file as backups if something bad happens
 
 # NOTE this bot assumes display_names are unique because 7cav requires it anyway
@@ -47,6 +49,20 @@ TOKEN       = os.getenv('TOKEN')
 GUILD_ID    = int(os.getenv('GUILD_ID')) # guild is a discord server
 
 ALLOWED_USERS = list(map(int, os.getenv('ALLOWED_USERS').split(',')))
+
+# BOT LOGGING
+logging.basicConfig(
+    level=logging.INFO,
+    format='{asctime} {levelname:<8} {name} {message}',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    style='{',
+    handlers=[
+        logging.StreamHandler(),
+        RotatingFileHandler('tntbot.log', maxBytes=5*1024*1024, backupCount=3)
+    ]
+)
+
+logger = logging.getLogger('tntbot')
 
 @dataclass
 class MemberRecord:
@@ -171,8 +187,7 @@ class AttendanceCog(commands.Cog):
     @commands.Cog.listener()
     async def on_resumed(self): # Called when the bot has to reconnect
         # If reconnected we have to take attendance of the whole channel again to make sure it's up to date
-        if DEBUG:
-            print(f"Bot resumed at {self.fnow()}, taking attendance to update...")
+        log.info(f"Bot resumed at {self.fnow()}, taking attendance to update...")
 
         now = datetime.now(TZ)
 
@@ -221,8 +236,7 @@ class AttendanceCog(commands.Cog):
 
     @tasks.loop(minutes=10.0)
     async def can_sleep(self):
-        if DEBUG:
-            print("Checking if bot can go to sleep")
+        logging.info("Checking if bot can go to sleep")
         if not self.jobs:
             self.bot.remove_listener(self.on_voice_state_update)
             self.listening = False
@@ -510,6 +524,8 @@ class AttendanceCog(commands.Cog):
         await self.job_report(job)
 
     async def job_report(self, job: WatchJob):
+        now = datetime.now(TZ)
+
         # Trigger on_leave to get a final snapshot of the attendance
         for members in job.attendance.values():
             for record in members.values():
@@ -535,7 +551,11 @@ class AttendanceCog(commands.Cog):
         output = "\n".join(lines)
 
         # Post to the report channel
-        title = f"`{job.name}` final attendance:\n"
+        if now > job.end:
+            title = f"`{job.name}` final attendance:\n"
+        else:
+            title = f"`{job.name}` current attendance:\n"
+
         channel = self.bot.get_channel(job.report_to)
         if channel:
             await channel.send(title + "```" + output + "```")
@@ -597,7 +617,6 @@ class TNTBot(commands.Bot):
         if (message.author.id in ALLOWED_USERS):
             if DEBUG:
                 print(f"{message.content}")
-
             await self.process_commands(message)
 
     async def on_command_error(self, ctx, error):
@@ -620,4 +639,4 @@ class HelpCommand(commands.MinimalHelpCommand):
 
 bot = TNTBot()
 bot.help_command = HelpCommand()
-bot.run(TOKEN)
+bot.run(TOKEN, log_handler=None)

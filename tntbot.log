@@ -1,0 +1,8 @@
+logging in using static token
+Shard ID None has connected to Gateway (Session ID: a52adef674f560eb1eaf72ba139eeee3).
+2026-03-30 19:11:19 INFO     discord.client logging in using static token
+2026-03-30 19:11:20 INFO     discord.gateway Shard ID None has connected to Gateway (Session ID: f3414de04a7b28978266bfe77c73f46e).
+2026-03-30 19:11:22 INFO     root Checking if bot can go to sleep
+2026-03-30 20:09:31 INFO     discord.client logging in using static token
+2026-03-30 20:09:33 INFO     discord.gateway Shard ID None has connected to Gateway (Session ID: 521f9611171ccab82535ee25777b78c8).
+2026-03-30 20:09:35 INFO     root Checking if bot can go to sleep
