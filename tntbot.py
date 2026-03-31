@@ -189,7 +189,7 @@ class AttendanceCog(commands.Cog):
             if now > job.end:
                 task.status = "cancelled"
                 task.cancel()
-                    print(f"Task `{job.name} was cancelled, because bot was disconnected at time.")
+                LOG.info(f"Task `{job.name} was cancelled, because bot was disconnected at time.")
 
             if job.status != "watching":
                 return
@@ -277,6 +277,13 @@ class AttendanceCog(commands.Cog):
         current: set[str] = {m.display_name for m in channel.members}
         lines = []
 
+        lines.append(f"{len(current)} members in '{channel_name}' at {self.fnow()}")
+        if current:
+            lines.append("```")
+            for name in current:
+                lines.append(f"{name}")
+            lines.append("```")
+
         if channel_name in self.poll_cache:
             previous = self.poll_cache[channel_name]
 
@@ -284,31 +291,26 @@ class AttendanceCog(commands.Cog):
             joined = current - previous
             left = previous - current
 
-            lines.append(f"{len(current)} members in '{channel_name}' at {self.fnow()}':\n")
-            for name in current:
-                lines.append(f"{name}")
-
             # Members who joined the channel since the last poll
             if joined:
-                lines.append("\nJoined since last poll:")
+                lines.append("Joined since last poll")
+                lines.append("```")
                 for name in joined:
-                    lines.append(f"+ {name}")
+                    lines.append(f"{name}")
+                lines.append("```")
 
             # Members who left the channel since the last poll
             if left:
-                lines.append("\nLeft since last poll:")
+                lines.append("Left since last poll")
+                lines.append("```")
                 for name in left:
-                    lines.append(f"- {name}")
-
-        else:
-            lines.append(f"First poll for '{channel_name}' — {len(current)} members:\n")
-            for name in current:
-                lines.append(f"{name}")
+                    lines.append(f"{name}")
+                lines.append("```")
 
         # Update cache
         self.poll_cache[channel_name] = current
 
-        await ctx.send("```" + "\n".join(lines) + "```")
+        await ctx.send("\n".join(lines))
 
     @commands.command()
     async def status(self, ctx: commands.Context):
@@ -477,7 +479,7 @@ class AttendanceCog(commands.Cog):
             await self.job_finished(job)
 
     def job_cleanup(self, job: WatchJob):
-        print(f"Job `{job.name}` cleanup.")
+        LOG.info(f"Job `{job.name}` cleanup.")
         # Remove job
         self.jobs.pop(job.name, None)
 
@@ -491,10 +493,10 @@ class AttendanceCog(commands.Cog):
 
     async def job_finished(self, job: WatchJob):
         if job.status == "cancelled":
-            print(f"Task `{job.name}` cancelled.")
+            LOG.info(f"Task `{job.name}` cancelled.")
             return
         else:
-            print(f"Task `{job.name}` finished.")
+            LOG.info(f"Task `{job.name}` finished.")
 
         await self.job_report(job)
 
@@ -546,7 +548,7 @@ class AttendanceCog(commands.Cog):
             await channel.send(title + "```" + output + "```")
             #await self.dm(job.member_id, title + "```" + output + "```")
         else:
-            print(f"Could not find report channel `{job.report_to}`.")
+            LOG.error(f"Could not find report channel `{job.report_to}`.")
 
     #@commands.Cog.listener() this is set programmatically
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -579,26 +581,24 @@ class TNTBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        print("AttendanceCog loaded.")
+        LOG.info("AttendanceCog loaded.")
         await self.add_cog(AttendanceCog(bot))
 
     async def on_ready(self):
-        print(f"Logged in as {self.user}")
-        print("Registered commands:")
+        LOG.info(f"Logged in as {self.user}")
 
         for command in self.commands:
-            print(f"- {command.name}")
+            LOG.info(f"Command {command.name} registered.")
 
         self.guild = self.get_guild(GUILD_ID)
 
         if self.guild is None:
-            print(f"Could not find guild with ID {GUILD_ID}."
-                  "ERROR: Make sure the bot has been invited to that server.")
+            LOG.Error(f"Could not find guild with ID {GUILD_ID}.")
             return
 
     async def on_message(self, message):
         if (message.author.id in ALLOWED_USERS):
-            LOG.info(f"{message.author.display} sent message `{message.content}`")
+            LOG.info(f"{message.author.display_name} sent message `{message.content}`")
             await self.process_commands(message)
 
     async def on_command_error(self, ctx, error):
