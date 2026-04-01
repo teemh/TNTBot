@@ -55,6 +55,14 @@ logging.basicConfig(
 
 LOG = logging.getLogger('tntbot')
 
+def ftimedelta(td: timedelta) -> str:
+    # Formats a timedelta to a HH:MM:SS string.
+    total_seconds = int(td.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    return f'{hours:02}:{minutes:02}:{seconds:02}'
+
 @dataclass
 class MemberRecord:
     display_name: str
@@ -132,23 +140,11 @@ class WatchJob:
         if member.id in self.attendance[channel_id]:
             self.attendance[channel_id][member.id].on_leave()
 
-    def report(self) -> dict[int, dict[int, MemberRecord]]:
-        return self.attendance
-
     def fstart(self):
         return self.start.strftime("%H:%M:%S")
 
     def fend(self):
         return self.end.strftime("%H:%M:%S")
-
-    def ftimedelta(self, td: timedelta):
-        # Formats a timedelta to a HH:MM:SS string.
-        total_seconds = int(td.total_seconds())
-
-        hours, remainder = divmod(total_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-
-        return f'{hours:02}:{minutes:02}:{seconds:02}'
 
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
@@ -188,7 +184,7 @@ class AttendanceCog(commands.Cog):
             LOG.info(f"Report created for task: {name}.")
             try:
                 with open(f"logs/{name}.log", "w") as f:
-                    f.write(self.build_report(job))
+                    f.write(report)
                     LOG.info(f"Report written to {name}.log")
             except OSError as e:
                 LOG.error(f"Failed to save report for job `{job.name}`: {e}")
@@ -213,7 +209,7 @@ class AttendanceCog(commands.Cog):
         for name, (job, task) in self.jobs.items():
             # If bot was disconnect the whole time of a task window just cancel it
             if now > job.end:
-                task.status = "cancelled"
+                job.status = "cancelled"
                 task.cancel()
                 LOG.info(f"Task `{job.name} was cancelled, because bot was disconnected at time.")
 
@@ -306,8 +302,7 @@ class AttendanceCog(commands.Cog):
     @commands.command()
     async def status(self, ctx: commands.Context):
         if not self.jobs:
-            await ctx.send("No watch jobs currently running.")
-            return
+            return await ctx.send("No watch tasks currently running.")
 
         now = datetime.now(TZ)
         lines = []
@@ -328,7 +323,7 @@ class AttendanceCog(commands.Cog):
     @commands.command()
     async def stop(self, ctx: commands.Context, name: str):
         if name not in self.jobs:
-            await ctx.send(f"No active task named `{name}` found.")
+            return await ctx.send(f"No active task named `{name}` found.")
 
         _, task = self.jobs[name]
         task.cancel()
@@ -346,18 +341,15 @@ class AttendanceCog(commands.Cog):
 
         # Name validation
         if not re.match(r'^[A-Za-z0-9_]+$', name):
-            await ctx.send("ERROR: Task name can only contain letters, numbers, and underscores.")
-            return
+            return await ctx.send("ERROR: Task name can only contain letters, numbers, and underscores.")
 
         # Check if there are channels to watch
         if not channel_names:
-            await ctx.send("ERROR: You must provide at least one channel to watch.")
-            return
+            return await ctx.send("ERROR: You must provide at least one channel to watch.")
 
         # Check if job is already running
         if name in self.jobs:
-            await ctx.send(f"ERROR: task `{name}` already exists.")
-            return
+            return await ctx.send(f"ERROR: task `{name}` already exists.")
 
         # Start time validation
         if start == "now": # lazy shortcut
@@ -366,8 +358,7 @@ class AttendanceCog(commands.Cog):
             try:
                 t_start = datetime.strptime(start, "%H:%M")
             except (ValueError, TypeError) as e:
-                await ctx.send(f"ERROR: start time `{start}` must be in the form `hh:mm`.")
-                return
+                return await ctx.send(f"ERROR: start time `{start}` must be in the form `hh:mm`.")
 
         # Duration validation
         pattern = re.compile(r'^(?:(\d+)h)?(?:(\d+)m)?$')
@@ -379,8 +370,7 @@ class AttendanceCog(commands.Cog):
             d_hours = int(match.group(1) or 0)
             d_minutes = int(match.group(2) or 0)
         except ValueError as e:
-            await ctx.send(f"ERROR: duration `{duration}` must be in the form: `XhYm`, `Xh`, or `Ym` e.g. `25h30m`, `2h`, `30m`")
-            return
+            return await ctx.send(f"ERROR: duration `{duration}` must be in the form: `XhYm`, `Xh`, or `Ym` e.g. `25h30m`, `2h`, `30m`")
 
         # Convert from time to datetime for the current day
         dt_start = datetime.now(TZ).replace(hour=t_start.hour, minute=t_start.minute)
@@ -389,23 +379,16 @@ class AttendanceCog(commands.Cog):
 
         # Check that the time ranges make sense
         if dt_start < now:
-            await ctx.send(f"ERROR: start time `{start}` can't be in the past.")
-            return
-
-        if dt_end < dt_start:
-            await ctx.send(f"ERROR: end time `{end}` can't be before start time ({start}).")
-            return
+            return await ctx.send(f"ERROR: start time `{start}` can't be in the past.")
 
         # Find channel ids based on names and make sure channel exists and are a voice channels.
         channels = []
         for channel_name in channel_names:
             channel = discord.utils.get(ctx.guild.channels, name=channel_name)
             if not channel:
-                await ctx.send(f"ERROR: `{channel_name}` is not a valid channel.")
-                return
+                return await ctx.send(f"ERROR: `{channel_name}` is not a valid channel.")
             elif not isinstance(channel, discord.VoiceChannel):
-                await ctx.send(f"ERROR: `{channel_name}` is not a voice channel.")
-                return
+                return await ctx.send(f"ERROR: `{channel_name}` is not a voice channel.")
             channels.append(channel)
 
         # Create a new watch job
@@ -427,7 +410,7 @@ class AttendanceCog(commands.Cog):
         self.jobs[name] = (job, task)
 
         await ctx.send(
-            f"Watch job `{job.name}` scheduled for {len(channels)} channel(s) "
+            f"Watch task `{job.name}` scheduled for {len(channels)} channel(s) "
             f"from `{job.fstart()}` to `{job.fend()}`."
         )
 
@@ -492,22 +475,21 @@ class AttendanceCog(commands.Cog):
 
         if channel:
             LOG.info(f"Sending final attendance for {job.name}.")
-            await self.bot.safe_send(channel, report)
+            return await self.bot.safe_send(channel, report)
         else:
             LOG.error(f"Could not find report channel `{job.report_to}`.")
 
     @commands.command()
     async def report(self, ctx: commands.Context, job_name: str):
-        if job_name not in self.jobs.keys():
-            await ctx.send(f"ERROR: Task `{job_name}` not found.")
-            return
+        if job_name not in self.jobs:
+            return await ctx.send(f"ERROR: Task `{job_name}` not found.")
 
         job, task = self.jobs[job_name]
         report = self.build_report(job)
         channel = self.bot.get_channel(job.report_to)
 
         if channel:
-            await channel.send(report)
+            return await channel.send(report)
         else:
             LOG.error(f"Could not find report channel `{job.report_to}`.")
 
@@ -521,7 +503,7 @@ class AttendanceCog(commands.Cog):
 
         # Merge member durations across all watched channels
         merged: dict[int, tuple[str, timedelta]] = {}
-        for channel_id, members in job.report().items():
+        for channel_id, members in job.attendance.items():
             for member_id, record in members.items():
                 if member_id in merged:
                     name, total = merged[member_id]
@@ -545,7 +527,7 @@ class AttendanceCog(commands.Cog):
         if merged:
             lines.append("```")
             for member_id, (display_name, total_duration) in merged.items():
-                lines.append(f"{display_name};{job.ftimedelta(total_duration)}")
+                lines.append(f"{display_name};{ftimedelta(total_duration)}")
             lines.append("```")
         else:
             lines.append("No members recorded.")
@@ -557,8 +539,6 @@ class AttendanceCog(commands.Cog):
         # If there are no channels to watch, don't do anything
         if not self.watch_list:
             return
-
-        LOG.info(f"Triggered on_voice_state_update event.")
 
         # Member left the channel, record their duration
         if before.channel and before.channel.id in self.watch_list:
@@ -575,7 +555,6 @@ class AttendanceCog(commands.Cog):
 
 class TNTBot(commands.Bot):
     def __init__(self):
-        guild = None
         intents = discord.Intents.default()
         intents.members = True           # Required to see member lists
         intents.voice_states = True      # Required to see who is in voice channels
@@ -586,7 +565,7 @@ class TNTBot(commands.Bot):
 
     async def setup_hook(self):
         LOG.info("AttendanceCog loaded.")
-        await self.add_cog(AttendanceCog(bot))
+        await self.add_cog(AttendanceCog(self))
 
     async def on_ready(self):
         LOG.info(f"Logged in as {self.user}")
@@ -597,7 +576,7 @@ class TNTBot(commands.Bot):
         self.guild = self.get_guild(GUILD_ID)
 
         if self.guild is None:
-            LOG.Error(f"Could not find guild with ID {GUILD_ID}.")
+            LOG.error(f"Could not find guild with ID {GUILD_ID}.")
             return
 
     async def on_message(self, message):
@@ -608,17 +587,15 @@ class TNTBot(commands.Bot):
     async def on_command_error(self, ctx, error):
         # Command does not exist
         if isinstance(error, commands.CommandNotFound):
-            await ctx.send(f"Unknown command. Use `{ctx.prefix}help` to see available commands.")
-            return
+            return await ctx.send(f"Unknown command. Use `{ctx.prefix}help` to see available commands.")
 
         # Command missing required argument
         elif isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send(f"Error: Missing Required Arugment(s)")
-            return
+            return await ctx.send(f"Error: Missing Required Arugment(s)")
 
         # Command is on cooldown
         elif isinstance(error, commands.CommandOnCooldown):
-            if ctx.author.id is self.bot.owner_id:
+            if ctx.author.id is self.owner_id:
                 ctx.command.reset_cooldown(ctx)
                 return await ctx.command.reinvoke(ctx)
             cooldowns = {
@@ -647,8 +624,7 @@ class TNTBot(commands.Bot):
         # Discord servers are having issues
         if isinstance(error.original, discord.HTTPException):
             LOG.error(f"HTTP {error.original.status} error in command: {error.original}")
-            await ctx.send(f"Discord error, please try again later.")
-            return
+            return await ctx.send(f"Discord error, please try again later.")
 
         raise error
 
@@ -657,8 +633,7 @@ class TNTBot(commands.Bot):
         LOG.info("Using safe send.")
         for attempt in range(retries):
             try:
-                await channel.send(message)
-                return
+                return await channel.send(message)
             except discord.HTTPException as e:
                 LOG.warning(f"HTTP {e.status} on attempt {attempt+1}/{retries}: {e}")
                 if e.status not in {429, 500, 503} or attempt >= retries - 1:
