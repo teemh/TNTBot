@@ -41,6 +41,16 @@ ALLOWED_USERS = list(map(int, os.getenv('ALLOWED_USERS').split(',')))
 
 AUTO_BACKUP = 1 # in minutes
 
+COOLDOWN_MESSAGES = {
+    commands.BucketType.default: f'for the whole bot.',
+    commands.BucketType.user:    f'for you.',
+    commands.BucketType.guild:   f'for this server.',
+    commands.BucketType.channel: f'for this channel.',
+    commands.BucketType.member:  f'cooldown for you.',
+    commands.BucketType.category:f'for this channel category.',
+    commands.BucketType.role:    f'for your role.'
+}
+
 # BOT LOGGING
 logging.basicConfig(
     level=logging.INFO,
@@ -55,13 +65,16 @@ logging.basicConfig(
 
 LOG = logging.getLogger('tntbot')
 
-def ftimedelta(td: timedelta) -> str:
+def fmt_timedelta(td: timedelta) -> str:
     # Formats a timedelta to a HH:MM:SS string.
     total_seconds = int(td.total_seconds())
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
 
     return f'{hours:02}:{minutes:02}:{seconds:02}'
+
+def fmt_time(dt: datetime) -> str:
+    return dt.strftime("%H:%M:%S")
 
 @dataclass
 class MemberRecord:
@@ -140,12 +153,6 @@ class WatchJob:
         if member.id in self.attendance[channel_id]:
             self.attendance[channel_id][member.id].on_leave()
 
-    def fstart(self):
-        return self.start.strftime("%H:%M:%S")
-
-    def fend(self):
-        return self.end.strftime("%H:%M:%S")
-
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -214,7 +221,7 @@ class AttendanceCog(commands.Cog):
                 LOG.info(f"Task `{job.name} was cancelled, because bot was disconnected at time.")
 
             if job.status != "watching":
-                return
+                continue #skip to next job
 
             LOG.info(f"Taking attendance on all watched channels.")
 
@@ -311,7 +318,7 @@ class AttendanceCog(commands.Cog):
         lines.append("Watch Status")
         lines.append("```")
         for name, (job, task) in self.jobs.items():
-            line = f"'{job.name}' | {job.created_by} | {job.status} | {job.fstart()} | {job.fend()} |"
+            line = f"'{job.name}' | {job.created_by} | {job.status} | {fmt_time(job.start)} | {fmt_time(job.end)} |"
             for cid in job.channel_ids:
                 channel = ctx.guild.get_channel(int(cid))
                 line = line + (f" {channel.name}")
@@ -411,7 +418,7 @@ class AttendanceCog(commands.Cog):
 
         await ctx.send(
             f"Watch task `{job.name}` scheduled for {len(channels)} channel(s) "
-            f"from `{job.fstart()}` to `{job.fend()}`."
+            f"from `{fmt_time(job.start)}` to `{fmt_time(job.end)}`."
         )
 
     async def job_start(self, job: WatchJob, channels: list[discord.VoiceChannel]) -> None:
@@ -493,6 +500,17 @@ class AttendanceCog(commands.Cog):
         else:
             LOG.error(f"Could not find report channel `{job.report_to}`.")
 
+    def merge_attendance(self, job: WatchJob) -> dict[int, tuple[str, timedelta]]:
+        merged: dict[int, tuple[str, timedelta]] = {}
+        for channel_id, members in job.attendance.items():
+            for member_id, record in members.items():
+                if member_id in merged:
+                    name, total = merged[member_id]
+                    merged[member_id] = (name, total + record.duration)
+                else:
+                    merged[member_id] = (record.display_name, record.duration)
+        return merged
+
     def build_report(self, job: WatchJob):
         now = datetime.now(TZ)
 
@@ -502,14 +520,7 @@ class AttendanceCog(commands.Cog):
                 record.snapshot()
 
         # Merge member durations across all watched channels
-        merged: dict[int, tuple[str, timedelta]] = {}
-        for channel_id, members in job.attendance.items():
-            for member_id, record in members.items():
-                if member_id in merged:
-                    name, total = merged[member_id]
-                    merged[member_id] = (name, total + record.duration)
-                else:
-                    merged[member_id] = (record.display_name, record.duration)
+        merged = self.merge_attendance(job)
 
         # Build output string
         lines = []
@@ -527,7 +538,7 @@ class AttendanceCog(commands.Cog):
         if merged:
             lines.append("```")
             for member_id, (display_name, total_duration) in merged.items():
-                lines.append(f"{display_name};{ftimedelta(total_duration)}")
+                lines.append(f"{display_name};{fmt_timedelta(total_duration)}")
             lines.append("```")
         else:
             lines.append("No members recorded.")
@@ -598,16 +609,7 @@ class TNTBot(commands.Bot):
             if ctx.author.id is self.owner_id:
                 ctx.command.reset_cooldown(ctx)
                 return await ctx.command.reinvoke(ctx)
-            cooldowns = {
-                commands.BucketType.default: f'for the whole bot.',
-                commands.BucketType.user:    f'for you.',
-                commands.BucketType.guild:   f'for this server.',
-                commands.BucketType.channel: f'for this channel.',
-                commands.BucketType.member:  f'cooldown for you.',
-                commands.BucketType.category:f'for this channel category.',
-                commands.BucketType.role:    f'for your role.'
-            }
-            return await ctx.send(f'The command `{ctx.command}` is on cooldown {cooldowns[error.cooldown.type]} ')
+            return await ctx.send(f'The command `{ctx.command}` is on cooldown {COOLDOWN_MESSAGES[error.cooldown.type]} ')
 
         # Bot lacks permissions
         elif isinstance(error, commands.BotMissingPermissions):
