@@ -267,7 +267,7 @@ class AttendanceCog(commands.Cog):
     def backup(self, interrupted: bool = False):
         # create snapshot record of each job and mark if interrupted.
         for name, (job, task) in self.jobs.items():
-            report_save(job, job.build_report(), interrupted)
+            self.report_save(job, job.build_report(), interrupted)
 
     async def job_start(self, job: WatchJob, channels: list[discord.VoiceChannel]) -> None:
         try:
