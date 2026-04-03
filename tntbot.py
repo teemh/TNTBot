@@ -31,11 +31,11 @@ from logging.handlers import RotatingFileHandler
 # - @commands.guild_only() means Don't allow this command in DMs, because the DM space has no ctx.
 # - This bot assumes display_names are unique because 7cav requires it anyway
 
+# BOT CONFIG
+#==============================================================================
 DEBUG = True
-
 TZ = ZoneInfo("America/New_York")
 
-# BOT CONFIG
 load_dotenv()
 TOKEN       = os.getenv('TOKEN')
 GUILD_ID    = int(os.getenv('GUILD_ID')) # guild is a discord server
@@ -55,6 +55,7 @@ COOLDOWN_MESSAGES = {
 }
 
 # BOT LOGGING
+#==============================================================================
 logging.basicConfig(
     level=logging.INFO,
     format='{asctime} {levelname:<8} {name} {message}',
@@ -69,6 +70,7 @@ logging.basicConfig(
 LOG = logging.getLogger('tntbot')
 
 # UTILITY
+#==============================================================================
 def fmt_timedelta(td: timedelta) -> str:
     # Formats a timedelta to a HH:MM:SS string.
     total_seconds = int(td.total_seconds())
@@ -87,6 +89,7 @@ def fmt_now() -> str:
     return fmt_time(datetime.now(TZ))
 
 # ATTENDANCE
+#==============================================================================
 @dataclass
 class MemberRecord:
     display_name: str
@@ -107,6 +110,8 @@ class MemberRecord:
             self.on_leave()
             self.on_join()
 
+# WATCHER - watch voice channels to take attendance
+#==============================================================================
 @dataclass
 class WatchJob:
     member_id: int # needed to dm members
@@ -139,7 +144,6 @@ class WatchJob:
             else:
                 if 'RET' in match.group(4):
                     return None
-
         return member
 
     def record_join(self, channel_id: int, member: discord.Member):
@@ -203,6 +207,8 @@ class WatchJob:
 
         return "\n".join(lines)
 
+# BOT ATTENDANCE FUNCTIONALITY
+#==============================================================================
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -246,11 +252,6 @@ class AttendanceCog(commands.Cog):
                 continue
             lines.append(channel.name)
         return split.join(lines)
-
-    # direct message member
-    async def dm(self, member_id: int, message: str):
-        member = await self.bot.fetch_user(member_id)
-        await member.send(message)
 
     def backup_reports(self, interrupted: bool = False):
         # Back up each job report to a log file
@@ -321,7 +322,6 @@ class AttendanceCog(commands.Cog):
             return
         else:
             LOG.info(f"Task `{job.name}` finished.")
-
 
         title = f"`{job.name}` final attendance"
         report = job.build_report()
@@ -628,7 +628,8 @@ class AttendanceCog(commands.Cog):
             for job in self.watch_list[after.channel.id]:
                 job.record_join(after.channel.id, member)
 
-
+# MAIN BOT
+#==============================================================================
 class TNTBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -642,6 +643,10 @@ class TNTBot(commands.Bot):
     async def setup_hook(self):
         LOG.info("AttendanceCog loaded.")
         await self.add_cog(AttendanceCog(self))
+
+    async def dm(self, member_id: int, message: str):
+        member = await self.bot.fetch_user(member_id)
+        await member.send(message)
 
     async def on_ready(self):
         LOG.info(f"Logged in as {self.user}")
@@ -716,6 +721,8 @@ class HelpCommand(commands.MinimalHelpCommand):
             emby = discord.Embed(description=page)
             await destination.send(embed=emby)
 
+# BOT START
+#==============================================================================
 bot = TNTBot()
 bot.help_command = HelpCommand()
 bot.run(TOKEN, log_handler=None)
