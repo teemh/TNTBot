@@ -164,6 +164,45 @@ class WatchJob:
         if member.id in self.attendance[channel_id]:
             self.attendance[channel_id][member.id].on_leave()
 
+    def merge_attendance(self) -> dict[int, tuple[str, timedelta]]:
+        merged: dict[int, tuple[str, timedelta]] = {}
+        for channel_id, members in self.attendance.items():
+            for member_id, record in members.items():
+                if member_id in merged:
+                    name, total = merged[member_id]
+                    merged[member_id] = (name, total + record.duration)
+                else:
+                    merged[member_id] = (record.display_name, record.duration)
+        return merged
+
+    def build_report(self):
+        now = datetime.now(TZ)
+
+        # Get a snapshot of the attendance
+        for members in self.attendance.values():
+            for record in members.values():
+                record.snapshot()
+
+        # Merge member durations across all watched channels
+        merged = self.merge_attendance()
+
+        # Build output string
+        lines = []
+
+        if self.interrupted:
+            lines.append("This task was interrupted and the results may not be accurate.")
+
+        # Added users in a nice format to be copied pasted.
+        if merged:
+            lines.append("```")
+            for member_id, (display_name, total_duration) in merged.items():
+                lines.append(f"{display_name};{fmt_timedelta(total_duration)}")
+            lines.append("```")
+        else:
+            lines.append("No members recorded.")
+
+        return "\n".join(lines)
+
 class AttendanceCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -208,34 +247,6 @@ class AttendanceCog(commands.Cog):
             lines.append(channel.name)
         return split.join(lines)
 
-    def build_report(self, job: WatchJob):
-        now = datetime.now(TZ)
-
-        # Get a snapshot of the attendance
-        for members in job.attendance.values():
-            for record in members.values():
-                record.snapshot()
-
-        # Merge member durations across all watched channels
-        merged = self.merge_attendance(job)
-
-        # Build output string
-        lines = []
-
-        if job.interrupted:
-            lines.append("This task was interrupted and the results may not be accurate.")
-
-        # Added users in a nice format to be copied pasted.
-        if merged:
-            lines.append("```")
-            for member_id, (display_name, total_duration) in merged.items():
-                lines.append(f"{display_name};{fmt_timedelta(total_duration)}")
-            lines.append("```")
-        else:
-            lines.append("No members recorded.")
-
-        return "\n".join(lines)
-
     # direct message member
     async def dm(self, member_id: int, message: str):
         member = await self.bot.fetch_user(member_id)
@@ -245,7 +256,7 @@ class AttendanceCog(commands.Cog):
         # Back up each job report to a log file
         for name, (job, task) in self.jobs.items():
             job.interrupted = interrupted
-            report = self.build_report(job)
+            report = job.build_report()
             LOG.info(f"Report created for task: {name}.")
             title = f"Task `{name}` created by `{job.created_by}` was watching `{self.fmt_channels(job.channel_ids)}` between `{fmt_datetime(job.start)}` and `{fmt_datetime(job.end)}`\n"
             try:
@@ -313,7 +324,7 @@ class AttendanceCog(commands.Cog):
 
 
         title = f"`{job.name}` final attendance"
-        report = self.build_report(job)
+        report = job.build_report()
         channel = self.bot.get_channel(job.report_to)
 
         if channel:
@@ -322,16 +333,6 @@ class AttendanceCog(commands.Cog):
         else:
             LOG.error(f"Could not find report channel `{job.report_to}`.")
 
-    def merge_attendance(self, job: WatchJob) -> dict[int, tuple[str, timedelta]]:
-        merged: dict[int, tuple[str, timedelta]] = {}
-        for channel_id, members in job.attendance.items():
-            for member_id, record in members.items():
-                if member_id in merged:
-                    name, total = merged[member_id]
-                    merged[member_id] = (name, total + record.duration)
-                else:
-                    merged[member_id] = (record.display_name, record.duration)
-        return merged
     # TASKS
     #--------------------------------------------------------------------------
     @tasks.loop(minutes=AUTO_BACKUP)
@@ -510,8 +511,6 @@ class AttendanceCog(commands.Cog):
         task.cancel()
         await ctx.send(f"Task `{name}` has been stopped.")
 
-
-
     @commands.command()
     @commands.guild_only()
     async def watch_cav(self, ctx: commands.Context, name: str, start: str, duration: str, *channel_names: str):
@@ -603,7 +602,7 @@ class AttendanceCog(commands.Cog):
 
         await ctx.send(f"`{job.name}` current attendance")
 
-        report = self.build_report(job)
+        report = job.build_report()
         channel = self.bot.get_channel(job.report_to)
 
         if channel:
