@@ -2,6 +2,7 @@ import os
 import re
 import discord
 import asyncio
+import logging
 from typing import Optional
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -9,10 +10,9 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from discord.ext import tasks,commands
 from datetime import datetime, timedelta, time
-import logging
 from logging.handlers import RotatingFileHandler
 
-# for google sheet functionality, maybe later
+# NOTE for google sheet functionality, maybe later
 #import gspread
 #from google.oauth2.service_account import Credentials
 
@@ -101,7 +101,7 @@ class MemberRecord:
             self.duration += datetime.now(TZ) - self.last_joined
             self.last_joined = None
 
-    # when we want an updated duration without stopping
+    # when we want an updated duration but watching hasn't stopped
     def snapshot(self):
         if self.last_joined is not None:
             self.on_leave()
@@ -176,6 +176,28 @@ class AttendanceCog(commands.Cog):
         # Start auto backup
         self.auto_backup.start()
 
+    def cog_unload(self):
+        # if cog is unloaded while tasks are running, cancel them all
+        for name, (job, task) in list(self.jobs.items()):
+            task.cancel()
+
+        # cancel auto backup
+        self.auto_backup.cancel()
+
+    # HELPERS
+    #--------------------------------------------------------------------------
+    def valid_name(self, name: str) -> bool:
+        if len(name) > 32:
+            return False
+
+        if not re.match(r'^[A-Za-z0-9_]+$', name):
+            return False
+
+        return True
+
+    def invalid_name_msg(self):
+        return "ERROR: Task name must be <= 32 characters and only contain letters, numbers, and underscores." 
+
     def fmt_channels(self, channel_ids: set[int], split: str = " ") -> str:
         lines = []
         for cid in channel_ids:
@@ -186,6 +208,153 @@ class AttendanceCog(commands.Cog):
             lines.append(channel.name)
         return split.join(lines)
 
+    def build_report(self, job: WatchJob):
+        now = datetime.now(TZ)
+
+        # Get a snapshot of the attendance
+        for members in job.attendance.values():
+            for record in members.values():
+                record.snapshot()
+
+        # Merge member durations across all watched channels
+        merged = self.merge_attendance(job)
+
+        # Build output string
+        lines = []
+
+        if job.interrupted:
+            lines.append("This task was interrupted and the results may not be accurate.")
+
+        # Added users in a nice format to be copied pasted.
+        if merged:
+            lines.append("```")
+            for member_id, (display_name, total_duration) in merged.items():
+                lines.append(f"{display_name};{fmt_timedelta(total_duration)}")
+            lines.append("```")
+        else:
+            lines.append("No members recorded.")
+
+        return "\n".join(lines)
+
+    # direct message member
+    async def dm(self, member_id: int, message: str):
+        member = await self.bot.fetch_user(member_id)
+        await member.send(message)
+
+    def backup_reports(self, interrupted: bool = False):
+        # Back up each job report to a log file
+        for name, (job, task) in self.jobs.items():
+            job.interrupted = interrupted
+            report = self.build_report(job)
+            LOG.info(f"Report created for task: {name}.")
+            title = f"Task `{name}` created by `{job.created_by}` was watching `{self.fmt_channels(job.channel_ids)}` between `{fmt_datetime(job.start)}` and `{fmt_datetime(job.end)}`\n"
+            try:
+                with open(f"logs/{name}.log", "w") as f:
+                    f.write(title + report)
+                    LOG.info(f"Report written to {name}.log")
+            except OSError as e:
+                LOG.error(f"Failed to save report for job `{job.name}`: {e}")
+
+    async def job_start(self, job: WatchJob, channels: list[discord.VoiceChannel]) -> None:
+        try:
+            LOG.info(f"Task `{job.name}` started")
+
+            # Wait until the start time
+            now = datetime.now(TZ)
+            remaining = (job.start - now).total_seconds()
+            if job.start > now:
+                LOG.info(f"Task `{job.name}` waiting for {remaining} seconds to start.")
+                await asyncio.sleep(remaining)
+
+            # Waiting is over start watching.
+            job.status = "watching"
+
+            # Add channels being watched by job to watch list
+            for channel in channels:
+                self.watch_list[channel.id].append(job)
+
+            # Record members already in the channel
+            for channel in channels:
+                for member in channel.members:
+                    job.record_join(channel.id, member)
+
+            # Keep watching until the end time, then finish
+            now = datetime.now(TZ)
+            remaining = (job.end - now).total_seconds()
+            if remaining > 0:
+                LOG.info(f"Task `{job.name}` watching for {remaining} seconds, then stopping.")
+                await asyncio.sleep(remaining)
+
+        except asyncio.CancelledError:
+            job.status = "cancelled" # cancelled
+        finally:
+            self.job_cleanup(job)
+            await self.job_finished(job)
+
+    def job_cleanup(self, job: WatchJob):
+        LOG.info(f"Task `{job.name}` cleanup.")
+        # Remove job
+        self.jobs.pop(job.name, None)
+
+        # Remove channels watched by jobs from watch list
+        for channel_id in job.channel_ids:
+            if channel_id in self.watch_list:
+                self.watch_list[channel_id].remove(job)
+                # If no more jobs are watching, remove channel from watch list
+                if not self.watch_list[channel_id]:
+                    del self.watch_list[channel_id]
+
+    async def job_finished(self, job: WatchJob):
+        if job.status == "cancelled":
+            LOG.info(f"Task `{job.name}` cancelled.")
+            return
+        else:
+            LOG.info(f"Task `{job.name}` finished.")
+
+
+        title = f"`{job.name}` final attendance"
+        report = self.build_report(job)
+        channel = self.bot.get_channel(job.report_to)
+
+        if channel:
+            LOG.info(f"Sending final attendance for {job.name}.")
+            return await self.bot.safe_send(channel, title + report)
+        else:
+            LOG.error(f"Could not find report channel `{job.report_to}`.")
+
+    def merge_attendance(self, job: WatchJob) -> dict[int, tuple[str, timedelta]]:
+        merged: dict[int, tuple[str, timedelta]] = {}
+        for channel_id, members in job.attendance.items():
+            for member_id, record in members.items():
+                if member_id in merged:
+                    name, total = merged[member_id]
+                    merged[member_id] = (name, total + record.duration)
+                else:
+                    merged[member_id] = (record.display_name, record.duration)
+        return merged
+    # TASKS
+    #--------------------------------------------------------------------------
+    @tasks.loop(minutes=AUTO_BACKUP)
+    async def auto_backup(self):
+        LOG.info(f"Automatically backing up task reports. (every {AUTO_BACKUP} minutes)")
+        self.backup_reports()
+
+    @auto_backup.before_loop
+    async def before_auto_backup(self):
+        await self.bot.wait_until_ready()
+
+    # DEBUG COMMANDS
+    #--------------------------------------------------------------------------
+    @commands.command(enabled=DEBUG)
+    async def debug_on_resumed(self, ctx: commands.Context):
+        await self.on_resumed()
+
+    @commands.command(enabled=DEBUG)
+    async def debug_on_disconnect(self, ctx: commands.Context):
+        await self.on_disconnect()
+
+    # COMMANDS
+    #--------------------------------------------------------------------------
     @commands.command()
     async def list_backups(self, ctx: commands.Context):
         try:
@@ -219,46 +388,10 @@ class AttendanceCog(commands.Cog):
         except OSError as e:
             LOG.error(f"Failed to read log for `{name}`: {e}")
 
-    @tasks.loop(minutes=AUTO_BACKUP)
-    async def auto_backup(self):
-        LOG.info(f"Automatically backing up task reports. (every {AUTO_BACKUP} minutes)")
-        self.backup_reports()
-
-    @auto_backup.before_loop
-    async def before_auto_backup(self):
-        await self.bot.wait_until_ready()
-
-    @commands.command(enabled=DEBUG)
-    async def debug_on_disconnect(self, ctx: commands.Context):
-        await self.on_disconnect()
-
     @commands.Cog.listener()
     async def on_disconnect(self):
         self.backup_reports(interrupted = True)
         LOG.info("Bot was disconnected.")
-
-    def backup_reports(self, interrupted: bool = False):
-        # Back up each job report to a log file
-        for name, (job, task) in self.jobs.items():
-            job.interrupted = interrupted
-            report = self.build_report(job)
-            LOG.info(f"Report created for task: {name}.")
-            title = f"Task `{name}` created by `{job.created_by}` was watching `{self.fmt_channels(job.channel_ids)}` between `{fmt_datetime(job.start)}` and `{fmt_datetime(job.end)}`\n"
-            try:
-                with open(f"logs/{name}.log", "w") as f:
-                    f.write(title + report)
-                    LOG.info(f"Report written to {name}.log")
-            except OSError as e:
-                LOG.error(f"Failed to save report for job `{job.name}`: {e}")
-
-    # direct message member
-    async def dm(self, member_id: int, message: str):
-        member = await self.bot.fetch_user(member_id)
-        await member.send(message)
-
-    @commands.command(enabled=DEBUG)
-    async def debug_on_resumed(self, ctx: commands.Context):
-        await self.on_resumed()
 
     @commands.Cog.listener()
     async def on_resumed(self): # Called when the bot has to reconnect
@@ -300,14 +433,6 @@ class AttendanceCog(commands.Cog):
                         if member_id not in in_channel:
                             LOG.debug(f"`{record.display_name}` left during outage, record that they left now.")
                             record.on_leave()
-
-    def cog_unload(self):
-        # if cog is unloaded while tasks are running, cancel them all
-        for name, (job, task) in list(self.jobs.items()):
-            task.cancel()
-
-        # cancel auto backup
-        self.auto_backup.cancel()
 
     @commands.command()
     @commands.guild_only()
@@ -385,17 +510,7 @@ class AttendanceCog(commands.Cog):
         task.cancel()
         await ctx.send(f"Task `{name}` has been stopped.")
 
-    def valid_name(self, name: str) -> bool:
-        if len(name) > 32:
-            return False
 
-        if not re.match(r'^[A-Za-z0-9_]+$', name):
-            return False
-
-        return True
-
-    def invalid_name_msg(self):
-        return "ERROR: Task name must be <= 32 characters and only contain letters, numbers, and underscores." 
 
     @commands.command()
     @commands.guild_only()
@@ -479,73 +594,6 @@ class AttendanceCog(commands.Cog):
 
         await ctx.send(f"Task `{job.name}` watching {len(channels)} channel(s) from `{fmt_time(job.start)}` to `{fmt_datetime(job.end)}`.")
 
-    async def job_start(self, job: WatchJob, channels: list[discord.VoiceChannel]) -> None:
-        try:
-            LOG.info(f"Task `{job.name}` started")
-
-            # Wait until the start time
-            now = datetime.now(TZ)
-            remaining = (job.start - now).total_seconds()
-            if job.start > now:
-                LOG.info(f"Task `{job.name}` waiting for {remaining} seconds to start.")
-                await asyncio.sleep(remaining)
-
-            # Waiting is over start watching.
-            job.status = "watching"
-
-            # Add channels being watched by job to watch list
-            for channel in channels:
-                self.watch_list[channel.id].append(job)
-
-            # Record members already in the channel
-            for channel in channels:
-                for member in channel.members:
-                    job.record_join(channel.id, member)
-
-            # Keep watching until the end time, then finish
-            now = datetime.now(TZ)
-            remaining = (job.end - now).total_seconds()
-            if remaining > 0:
-                LOG.info(f"Task `{job.name}` watching for {remaining} seconds, then stopping.")
-                await asyncio.sleep(remaining)
-
-        except asyncio.CancelledError:
-            job.status = "cancelled" # cancelled
-        finally:
-            self.job_cleanup(job)
-            await self.job_finished(job)
-
-    def job_cleanup(self, job: WatchJob):
-        LOG.info(f"Task `{job.name}` cleanup.")
-        # Remove job
-        self.jobs.pop(job.name, None)
-
-        # Remove channels watched by jobs from watch list
-        for channel_id in job.channel_ids:
-            if channel_id in self.watch_list:
-                self.watch_list[channel_id].remove(job)
-                # If no more jobs are watching, remove channel from watch list
-                if not self.watch_list[channel_id]:
-                    del self.watch_list[channel_id]
-
-    async def job_finished(self, job: WatchJob):
-        if job.status == "cancelled":
-            LOG.info(f"Task `{job.name}` cancelled.")
-            return
-        else:
-            LOG.info(f"Task `{job.name}` finished.")
-
-
-        title = f"`{job.name}` final attendance"
-        report = self.build_report(job)
-        channel = self.bot.get_channel(job.report_to)
-
-        if channel:
-            LOG.info(f"Sending final attendance for {job.name}.")
-            return await self.bot.safe_send(channel, title + report)
-        else:
-            LOG.error(f"Could not find report channel `{job.report_to}`.")
-
     @commands.command()
     async def report(self, ctx: commands.Context, job_name: str):
         if job_name not in self.jobs:
@@ -562,45 +610,6 @@ class AttendanceCog(commands.Cog):
             return await channel.send(report)
         else:
             LOG.error(f"Could not find report channel `{job.report_to}`.")
-
-    def merge_attendance(self, job: WatchJob) -> dict[int, tuple[str, timedelta]]:
-        merged: dict[int, tuple[str, timedelta]] = {}
-        for channel_id, members in job.attendance.items():
-            for member_id, record in members.items():
-                if member_id in merged:
-                    name, total = merged[member_id]
-                    merged[member_id] = (name, total + record.duration)
-                else:
-                    merged[member_id] = (record.display_name, record.duration)
-        return merged
-
-    def build_report(self, job: WatchJob):
-        now = datetime.now(TZ)
-
-        # Get a snapshot of the attendance
-        for members in job.attendance.values():
-            for record in members.values():
-                record.snapshot()
-
-        # Merge member durations across all watched channels
-        merged = self.merge_attendance(job)
-
-        # Build output string
-        lines = []
-
-        if job.interrupted:
-            lines.append("This task was interrupted and the results may not be accurate.")
-
-        # Added users in a nice format to be copied pasted.
-        if merged:
-            lines.append("```")
-            for member_id, (display_name, total_duration) in merged.items():
-                lines.append(f"{display_name};{fmt_timedelta(total_duration)}")
-            lines.append("```")
-        else:
-            lines.append("No members recorded.")
-
-        return "\n".join(lines)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
