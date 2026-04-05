@@ -23,7 +23,6 @@ from logging.handlers import RotatingFileHandler
 # TODO have an admin be able to add and remove allowed users
 # TODO method to delete old reports, delete command or clean command?
 
-# TODO cancel command that doesn't save and stop command that does save.
 # TODO better help command
 # TODO auto clean 1 month from last modified
 # TODO set recurring start times, dates
@@ -47,7 +46,6 @@ ALLOWED_USERS = list(map(int, os.getenv('ALLOWED_USERS').split(',')))
 ALLOWED_CHANNELS = list(map(int, os.getenv('ALLOWED_CHANNELS').split(',')))
 
 AUTO_BACKUP = 10 # in minutes
-
 
 # BOT LOGGING
 #==============================================================================
@@ -228,7 +226,6 @@ class AttendanceCog(commands.Cog):
         self.bot = bot
         self.jobs: dict[str, tuple[WatchJob, asyncio.Task]] = {}
         self.watch_list: dict[int, list[WatchJob]] = defaultdict(list) 
-        self.disconnected : bool = False # mostly used for debugging
 
         # For polling channels in real time and comparing the results from the previous poll
         self.poll_cache: dict[str, set[str]] = {}
@@ -386,6 +383,11 @@ class AttendanceCog(commands.Cog):
     @commands.command()
     @commands.cooldown(rate=1, per=5, type=commands.BucketType.user)
     async def reports(self, ctx: commands.Context):
+        """List all saved reports with their last modified date.
+
+        Example:
+            !reports
+        """
         try:
             files = []
             for f in os.listdir('./reports'):
@@ -410,6 +412,18 @@ class AttendanceCog(commands.Cog):
     @commands.command()
     @commands.cooldown(rate=1, per=5, type=commands.BucketType.user)
     async def report(self, ctx: commands.Context, name: str):
+        """Read a saved report from disk.
+
+        If a task with the same name is currently running, a warning
+        will be shown as the report may be out of date. Use !ping
+        instead to get the current attendance for a running task.
+
+        Arguments:
+            name - Name of the report to read.
+
+        Example:
+            !report my_task
+        """
         # Name validation
         if not self.valid_name(name):
             return await ctx.send(self.invalid_name_msg())
@@ -438,6 +452,18 @@ class AttendanceCog(commands.Cog):
     @commands.guild_only()
     @commands.cooldown(rate=1, per=5, type=commands.BucketType.user)
     async def poll(self, ctx: commands.Context, channel_name: str):
+        """Take a snapshot of who is currently in a voice channel.
+
+        Shows who is currently in the channel and
+        who has joined or left since the last poll.
+
+        Arguments:
+            channel_name - Name of the voice channel to poll.
+
+        Example:
+            !poll channel_name
+        """
+
         channel = discord.utils.get(ctx.guild.channels, name=channel_name)
 
         if not channel:
@@ -552,6 +578,12 @@ class AttendanceCog(commands.Cog):
     @commands.guild_only()
     @commands.cooldown(rate=1, per=10, type=commands.BucketType.user)
     async def watch_cav(self, ctx: commands.Context, name: str, start: str, duration: str, *channel_names: str):
+        """Schedule a new task to take attendance for Cav members only.
+
+        Same as !watch but filters out non-Cav and retired members.
+        Only members matching the format 'ABC.Name.XYZ Role' are recorded,
+        and members with 'RET' in their role are excluded.
+        """
         await self.watch(ctx, name, start, duration, *channel_names, cav_only = True)
 
     @commands.command()
