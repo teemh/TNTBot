@@ -23,6 +23,7 @@ from logging.handlers import RotatingFileHandler
 # TODO have an admin be able to add and remove allowed users
 # TODO method to delete old reports, delete command or clean command?
 
+# TODO cancel command that doesn't save and stop command that does save.
 # TODO better help command
 # TODO auto clean 1 month from last modified
 # TODO set recurring start times, dates
@@ -200,7 +201,7 @@ class WatchJob:
 
         # Report outage information
         if self.outages:
-            total_downtime = sum((end - start for _, (start, end) in enumerate(self.outages)), timedelta())
+            total_downtime = sum((end - start for start, end in self.outages), timedelta())
             lines.append(f"Bot disconnected {len(self.outages)} time(s) while this task was running:")
             lines.append("```")
             for start, end in self.outages:
@@ -227,6 +228,7 @@ class AttendanceCog(commands.Cog):
         self.bot = bot
         self.jobs: dict[str, tuple[WatchJob, asyncio.Task]] = {}
         self.watch_list: dict[int, list[WatchJob]] = defaultdict(list) 
+        self.disconnected : bool = False # mostly used for debugging
 
         # For polling channels in real time and comparing the results from the previous poll
         self.poll_cache: dict[str, set[str]] = {}
@@ -287,6 +289,7 @@ class AttendanceCog(commands.Cog):
             # Wait until the start time
             now = datetime.now(TZ)
             remaining = (job.start - now).total_seconds()
+
             if job.start > now:
                 LOG.info(f"Task `{job.name}` waiting for {remaining} seconds to start.")
                 await asyncio.sleep(remaining)
@@ -306,15 +309,19 @@ class AttendanceCog(commands.Cog):
             # Keep watching until the end time, then finish
             now = datetime.now(TZ)
             remaining = (job.end - now).total_seconds()
+
             if remaining > 0:
                 LOG.info(f"Task `{job.name}` watching for {remaining} seconds, then stopping.")
                 await asyncio.sleep(remaining)
 
         except asyncio.CancelledError:
-            job.status = "cancelled" # cancelled
+            if job.status != "stopped": # stop command will trigger this event, but we want to save the report
+                job.status = "cancelled" # cancelled
+
         except Exception as e:
             job.status = "error"
             LOG.error(f"Task `{job.name}` died unexpectedly: {e}", exc_info=True)
+
         finally:
             self.job_cleanup(job)
             await self.job_finished(job)
@@ -327,8 +334,8 @@ class AttendanceCog(commands.Cog):
         # Remove channels watched by jobs from watch list
         for channel_id in job.channel_ids:
             if channel_id in self.watch_list:
-                self.watch_list[channel_id].remove(job)
                 # If no more jobs are watching, remove channel from watch list
+                self.watch_list[channel_id].remove(job)
                 if not self.watch_list[channel_id]:
                     del self.watch_list[channel_id]
 
@@ -336,10 +343,12 @@ class AttendanceCog(commands.Cog):
         if job.status == "cancelled":
             LOG.info(f"Task `{job.name}` cancelled.")
             return
+        elif job.status == "stopped":
+            LOG.info(f"Task `{job.name}` was stopped and finished early.")
         else:
             LOG.info(f"Task `{job.name}` finished.")
 
-        title = f"`{job.name}` finished taking attendance. Saving `{job.name}` report.\n"
+        title = f"Final attendance report for `{job.name}`.\n"
         report = job.build_report()
         channel = self.bot.get_channel(job.report_to)
         LOG.info(f"Saving final report for {job.name}.")
@@ -412,6 +421,11 @@ class AttendanceCog(commands.Cog):
             title = f"Report `{name}.txt` - last modified `{fmt_datetime(modified)}`\n"
             with open(filename, "r") as f:
                 content = f.read()
+
+            # Let user know that the report is probably old if a task with the same name is already running.
+            if name in self.jobs:
+                title += f"NOTE: A task named `{name}` is currently running, this report may be out of date. Use `!ping {name}` for current attendance.\n"
+
             if not content:
                 return await ctx.send(f"Report for `{name}` is empty.")
             await ctx.send(title + content)
@@ -498,11 +512,27 @@ class AttendanceCog(commands.Cog):
 
     @commands.command()
     @commands.cooldown(rate=1, per=2, type=commands.BucketType.user)
-    async def stop(self, ctx: commands.Context, name: str):
-        """Cancels a currently running watch task.
+    async def cancel(self, ctx: commands.Context, name: str):
+        """Cancels a running task without saving the report.
 
-        Note:
-            A cancelled task is NOT saved.
+        Arguments:
+            name - Name of the task to cancel.
+
+        Example:
+            !cancel my_task
+        """
+        if name not in self.jobs:
+            return await ctx.send(f"No active task named `{name}` found.")
+
+        job, task = self.jobs[name]
+        job.status = "cancelled" # prevents minor race condition on status commands
+        task.cancel()
+        await ctx.send(f"Task `{name}` has been cancelled.")
+
+    @commands.command()
+    @commands.cooldown(rate=1, per=2, type=commands.BucketType.user)
+    async def stop(self, ctx: commands.Context, name: str):
+        """Stops a running task and saves the attendance.
 
         Arguments:
             name - Name of the task to stop.
@@ -514,9 +544,9 @@ class AttendanceCog(commands.Cog):
             return await ctx.send(f"No active task named `{name}` found.")
 
         job, task = self.jobs[name]
-        job.status = "cancelled" # prevents minor race condition on status commands
+        job.status = "stopped"
         task.cancel()
-        await ctx.send(f"Task `{name}` has been stopped.")
+        await ctx.send(f"Task `{name}` has been stopped early and the report has been saved.")
 
     @commands.command()
     @commands.guild_only()
@@ -575,7 +605,7 @@ class AttendanceCog(commands.Cog):
             return await ctx.send(f"ERROR: duration `{duration}` must be in the form: `XhYm`, `Xh`, or `Ym` e.g. `25h30m`, `2h`, `30m`")
 
         # Convert from time to datetime for the current day
-        dt_start = datetime.now(TZ).replace(hour=t_start.hour, minute=t_start.minute, second=0, microsecond=0)
+        dt_start = datetime.now(TZ).replace(hour=t_start.hour, minute=t_start.minute, second=t_start.second)
         # End time is start time + duration
         dt_end = dt_start + timedelta(hours=d_hours, minutes=d_minutes)
 
@@ -653,8 +683,6 @@ class AttendanceCog(commands.Cog):
     async def on_resumed(self): # Called when the bot has to reconnect
         now = datetime.now(TZ)
 
-        LOG.info(f"Bot resumed at {fmt_now()}")
-
         # Record the outage time
         for name, (job, task) in self.jobs.items():
             if job.disconnected_at is not None:
@@ -672,7 +700,8 @@ class AttendanceCog(commands.Cog):
             if job.status != "watching":
                 continue #skip to next job
 
-            LOG.info(f"Taking attendance on all watched channels.")
+            LOG.info(f"Bot resumed at {fmt_now()}")
+            LOG.info(f"For task {name}, taking attendance on all their watched channels.")
 
             for channel_id in job.channel_ids:
                 channel = self.bot.get_channel(channel_id)
@@ -730,7 +759,7 @@ class TNTBot(commands.Bot):
         await self.add_cog(AttendanceCog(self))
 
     async def dm(self, member_id: int, message: str):
-        member = await self.bot.fetch_user(member_id)
+        member = await self.fetch_user(member_id)
         await member.send(message)
 
     async def on_ready(self):
